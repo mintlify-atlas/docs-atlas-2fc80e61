@@ -1,0 +1,165 @@
+---
+title: "Web Tools"
+description: "Source reference for web interaction tools: WebFetch and WebSearch."
+---
+
+Web tools give Claude Code access to live internet content. Both tools are read-only and do not modify any files or make authenticated requests on your behalf.
+
+---
+
+## WebFetch
+
+**Source**: `src/tools/WebFetchTool/`
+
+Fetches content from a URL, converts HTML to Markdown, and processes the result with a secondary model using a provided prompt.
+
+### Tool name
+
+```typescript
+export const WEB_FETCH_TOOL_NAME = 'WebFetch'
+```
+
+### Description (from `prompt.ts`)
+
+```typescript
+export const DESCRIPTION = `
+- Fetches content from a specified URL and processes it using an AI model
+- Takes a URL and a prompt as input
+- Fetches the URL content, converts HTML to markdown
+- Processes the content with the prompt using a small, fast model
+- Returns the model's response about the content
+- Use this tool when you need to retrieve and analyze web content
+
+Usage notes:
+  - IMPORTANT: If an MCP-provided web fetch tool is available, prefer using that tool instead of this one, as it may have fewer restrictions.
+  - The URL must be a fully-formed valid URL
+  - HTTP URLs will be automatically upgraded to HTTPS
+  - The prompt should describe what information you want to extract from the page
+  - This tool is read-only and does not modify any files
+  - Results may be summarized if the content is very large
+  - Includes a self-cleaning 15-minute cache for faster responses when repeatedly accessing the same URL
+  - When a URL redirects to a different host, the tool will inform you and provide the redirect URL in a special format. You should then make a new WebFetch request with the redirect URL to fetch the content.
+  - For GitHub URLs, prefer using the gh CLI via Bash instead (e.g., gh pr view, gh issue view, gh api).
+`
+```
+
+### Secondary model prompt
+
+The fetched Markdown content and the user's extraction prompt are forwarded to a secondary (small, fast) model. The prompt template differs based on whether the domain is pre-approved:
+
+```typescript
+export function makeSecondaryModelPrompt(
+  markdownContent: string,
+  prompt: string,
+  isPreapprovedDomain: boolean,
+): string {
+  const guidelines = isPreapprovedDomain
+    ? `Provide a concise response based on the content above. Include relevant details, code examples, and documentation excerpts as needed.`
+    : `Provide a concise response based only on the content above. In your response:
+ - Enforce a strict 125-character maximum for quotes from any source document.
+ - Use quotation marks for exact language from articles.
+ - You are not a lawyer and never comment on the legality of your own prompts and responses.
+ - Never produce or reproduce exact song lyrics.`
+
+  return `
+Web page content:
+---
+${markdownContent}
+---
+
+${prompt}
+
+${guidelines}
+`
+}
+```
+
+<Note>
+Pre-approved domains (defined in `preapproved.ts`) receive less restrictive quote guidelines. This covers Anthropic-owned and other trusted documentation domains.
+</Note>
+
+### Caching
+
+WebFetch maintains a self-cleaning 15-minute in-memory cache keyed by URL. Repeated fetches of the same URL within the cache window return the cached Markdown without making a network request.
+
+### Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `url` | `string` | Fully-formed URL to fetch |
+| `prompt` | `string` | What information to extract from the page |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `WebFetchTool.ts` | Tool definition, HTTP fetch, HTML→Markdown conversion, secondary model call |
+| `prompt.ts` | Tool name, description, secondary model prompt builder |
+| `preapproved.ts` | List of pre-approved domains with relaxed quote guidelines |
+| `utils.ts` | URL validation, redirect detection, Markdown post-processing |
+| `UI.tsx` | Fetch progress and result display |
+
+---
+
+## WebSearch
+
+**Source**: `src/tools/WebSearchTool/`
+
+Searches the web and returns structured search result blocks, including source URLs as Markdown hyperlinks. Searches are performed within a single API call.
+
+### Tool name
+
+```typescript
+export const WEB_SEARCH_TOOL_NAME = 'WebSearch'
+```
+
+### Description (from `prompt.ts`)
+
+```typescript
+export function getWebSearchPrompt(): string {
+  const currentMonthYear = getLocalMonthYear()
+  return `
+- Allows Claude to search the web and use the results to inform responses
+- Provides up-to-date information for current events and recent data
+- Returns search result information formatted as search result blocks, including links as markdown hyperlinks
+- Use this tool for accessing information beyond Claude's knowledge cutoff
+- Searches are performed automatically within a single API call
+
+CRITICAL REQUIREMENT - You MUST follow this:
+  - After answering the user's question, you MUST include a "Sources:" section at the end of your response
+  - In the Sources section, list all relevant URLs from the search results as markdown hyperlinks: [Title](URL)
+  - This is MANDATORY - never skip including sources in your response
+
+Usage notes:
+  - Domain filtering is supported to include or block specific websites
+  - Web search is only available in the US
+
+IMPORTANT - Use the correct year in search queries:
+  - The current month is ${currentMonthYear}. You MUST use this year when searching for recent information.
+`
+}
+```
+
+### Source attribution requirement
+
+After every WebSearch response, the model is instructed to append a `Sources:` section with Markdown hyperlinks to all relevant search result URLs. This is enforced via the tool's system prompt.
+
+### Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `query` | `string` | Search query |
+| `allowed_domains` | `string[]` (optional) | Restrict results to these domains |
+| `blocked_domains` | `string[]` (optional) | Exclude results from these domains |
+
+<Note>
+WebSearch is only available to users in the United States. In other regions, the tool is excluded from the active tool pool.
+</Note>
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `WebSearchTool.ts` | Tool definition, Anthropic search API integration |
+| `prompt.ts` | Tool name and dynamic description builder |
+| `UI.tsx` | Search result display with source links |

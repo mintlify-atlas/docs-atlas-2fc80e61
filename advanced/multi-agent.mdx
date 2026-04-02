@@ -1,0 +1,273 @@
+---
+title: "Multi-Agent Workflows"
+description: "Spawn parallel sub-agents, manage async background tasks, and orchestrate multi-agent teams in Claude Code."
+---
+
+Claude Code supports multi-agent workflows that let a single session spawn and coordinate multiple independent agents. Agents can run tasks in parallel, communicate via messages, and be managed as persistent background tasks.
+
+## Agent Tool
+
+The `Agent` tool (formerly `Task`) is the primary mechanism for spawning a sub-agent:
+
+```typescript
+Agent({
+  description: "Run unit tests",          // 3–5 word label
+  prompt: "Run the full test suite and report any failures",
+  subagent_type: "worker",                // optional: use a specific agent definition
+  run_in_background: true,               // optional: launch without blocking
+  model: "sonnet",                       // optional: "sonnet" | "opus" | "haiku"
+})
+```
+
+When a sub-agent is launched, it receives its own system prompt, isolated tool pool, and message history. The parent receives either a synchronous result or an async reference depending on how the agent was launched.
+
+### Sub-agent output statuses
+
+| Status | Meaning |
+|---|---|
+| `completed` | Agent finished synchronously; result is inline |
+| `async_launched` | Agent running in background; check `outputFile` for progress |
+| `remote_launched` | Agent running in a remote CCR environment |
+| `teammate_spawned` | Agent spawned as a tmux pane teammate |
+
+### Tool availability for async agents
+
+Sub-agents launched via `Agent` have access to a curated set of tools defined in `src/constants/tools.ts`:
+
+```typescript
+// src/constants/tools.ts
+export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
+  FILE_READ_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
+  TODO_WRITE_TOOL_NAME,
+  GREP_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
+  GLOB_TOOL_NAME,
+  ...SHELL_TOOL_NAMES,
+  FILE_EDIT_TOOL_NAME,
+  FILE_WRITE_TOOL_NAME,
+  NOTEBOOK_EDIT_TOOL_NAME,
+  SKILL_TOOL_NAME,
+  SYNTHETIC_OUTPUT_TOOL_NAME,
+  TOOL_SEARCH_TOOL_NAME,
+  ENTER_WORKTREE_TOOL_NAME,
+  EXIT_WORKTREE_TOOL_NAME,
+])
+```
+
+### Disallowed tools for all agents
+
+The following tools are blocked inside any sub-agent to prevent recursion and maintain isolation:
+
+```typescript
+// src/constants/tools.ts
+export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
+  TASK_OUTPUT_TOOL_NAME,        // prevents recursive output loops
+  EXIT_PLAN_MODE_V2_TOOL_NAME,  // plan mode is a main-thread abstraction
+  ENTER_PLAN_MODE_TOOL_NAME,
+  // AGENT_TOOL_NAME blocked unless USER_TYPE === 'ant' (enables nested agents)
+  ASK_USER_QUESTION_TOOL_NAME,
+  TASK_STOP_TOOL_NAME,          // requires main thread task state
+])
+```
+
+<Note>
+Nested agents (an agent spawning its own agents) are enabled only for Anthropic-internal builds where `USER_TYPE === 'ant'`. In external builds, `AgentTool` itself is in `ALL_AGENT_DISALLOWED_TOOLS`.
+</Note>
+
+## Async Task Management
+
+When agents run in the background, Claude Code tracks them via an async task system. Agents can create, update, list, and stop tasks using dedicated tools.
+
+<CardGroup cols={2}>
+  <Card title="TaskCreate" icon="plus">
+    Create a new tracked task with a subject, description, and optional metadata. Returns the task ID.
+  </Card>
+  <Card title="TaskList" icon="list">
+    List all active tasks with their status (`pending`, `in_progress`, `completed`) and any blocking dependencies.
+  </Card>
+  <Card title="TaskUpdate" icon="pen">
+    Update a task's status or metadata. Used by agents to report progress back to the main thread.
+  </Card>
+  <Card title="TaskGet" icon="magnifying-glass">
+    Retrieve a specific task by ID, including its full description and current state.
+  </Card>
+</CardGroup>
+
+### TaskCreate schema
+
+```typescript
+// src/tools/TaskCreateTool/TaskCreateTool.ts
+z.strictObject({
+  subject: z.string(),        // brief title shown in the task list
+  description: z.string(),    // full description of what needs to be done
+  activeForm: z.string().optional(), // e.g. "Running tests" — shown in spinner
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
+```
+
+### TaskList output
+
+```
+#task-001 [in_progress] Run unit tests (agent-worker-1)
+#task-002 [pending]     Update documentation [blocked by #task-001]
+#task-003 [completed]   Lint codebase
+```
+
+### /tasks command
+
+Run `/tasks` (or `/bashes`) in the REPL to open the task management view:
+
+```
+/tasks
+```
+
+This shows all background tasks, their statuses, token usage, and lets you kill or inspect any running agent.
+
+## Sending Messages Between Agents
+
+`SendMessage` lets agents communicate with each other by name or ID:
+
+```json
+{"to": "researcher", "summary": "assign task 1", "message": "start on task #1"}
+{"to": "*", "message": "all agents: switch to the new branch"}
+{"to": "agent-a1b2c3", "message": "fix the null pointer in validate.ts:42"}
+```
+
+| `to` value | Target |
+|---|---|
+| `"name"` | Teammate by name (as given in `Agent({name: ...})`) |
+| `"*"` | Broadcast to all teammates |
+| `"agentId"` | Specific agent by UUID |
+
+<Warning>
+Plain text output from an agent is **not** visible to other agents. Agents must call `SendMessage` explicitly to communicate.
+</Warning>
+
+## In-Process Teammates
+
+In-process teammates run inside the same Node.js process as the leader. They get additional tools beyond the base `ASYNC_AGENT_ALLOWED_TOOLS`:
+
+```typescript
+// src/constants/tools.ts
+export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
+  TASK_CREATE_TOOL_NAME,
+  TASK_GET_TOOL_NAME,
+  TASK_LIST_TOOL_NAME,
+  TASK_UPDATE_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+  // When AGENT_TRIGGERS is enabled:
+  CRON_CREATE_TOOL_NAME,
+  CRON_DELETE_TOOL_NAME,
+  CRON_LIST_TOOL_NAME,
+])
+```
+
+<Note>
+In-process teammates cannot spawn their own background agents (`run_in_background: true` is blocked). Their lifecycle is tied to the leader process.
+</Note>
+
+## Coordinator Mode
+
+Coordinator mode restricts Claude to a pure orchestration role. In this mode, the model only has access to agent management and output tools:
+
+```typescript
+// src/constants/tools.ts
+export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
+  AGENT_TOOL_NAME,            // spawn workers
+  TASK_STOP_TOOL_NAME,        // kill a running worker
+  SEND_MESSAGE_TOOL_NAME,     // continue a worker with follow-up
+  SYNTHETIC_OUTPUT_TOOL_NAME, // emit structured output
+])
+```
+
+Enable coordinator mode by setting the environment variable:
+
+```bash
+CLAUDE_CODE_COORDINATOR_MODE=1 claude
+```
+
+In coordinator mode, the system prompt instructs Claude to orchestrate parallel workers rather than directly using file or shell tools. Worker results arrive as `<task-notification>` XML messages in the user role:
+
+```xml
+<task-notification>
+  <task-id>agent-a1b2c3</task-id>
+  <status>completed</status>
+  <summary>Agent "Run tests" completed</summary>
+  <result>All 42 tests passed. No failures.</result>
+  <usage>
+    <total_tokens>8420</total_tokens>
+    <tool_uses>12</tool_uses>
+    <duration_ms>14300</duration_ms>
+  </usage>
+</task-notification>
+```
+
+The coordinator responds by continuing the worker with `SendMessage` or spawning new workers with `Agent`.
+
+## Swarm Mode (Multi-Pane Teams)
+
+Swarm mode launches multiple Claude instances as tmux panes, each running as a named teammate. The team is managed via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`:
+
+```bash
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude
+```
+
+Each teammate is spawned as a separate OS process and communicates with the team lead over an internal messaging bus. The lead assigns work via `Agent({name: "worker-1", team_name: "my-team", ...})`.
+
+### Swarm constants
+
+```typescript
+// src/utils/swarm/constants.ts
+export const TEAM_LEAD_NAME = 'team-lead'
+export const SWARM_SESSION_NAME = 'claude-swarm'
+export const SWARM_VIEW_WINDOW_NAME = 'swarm-view'
+
+// Override the Claude binary used to spawn teammates:
+export const TEAMMATE_COMMAND_ENV_VAR = 'CLAUDE_CODE_TEAMMATE_COMMAND'
+// Assign a color to each teammate pane:
+export const TEAMMATE_COLOR_ENV_VAR = 'CLAUDE_CODE_AGENT_COLOR'
+// Require plan-mode approval before implementation:
+export const PLAN_MODE_REQUIRED_ENV_VAR = 'CLAUDE_CODE_PLAN_MODE_REQUIRED'
+```
+
+## Cron Scheduling
+
+When the `AGENT_TRIGGERS` feature flag is enabled, in-process teammates can schedule recurring or one-shot tasks using the cron tools:
+
+```json
+// Schedule a recurring task — every weekday at 9am
+CronCreate({
+  "cron": "57 8 * * 1-5",
+  "prompt": "Run the smoke test suite and report results",
+  "recurring": true
+})
+
+// Schedule a one-shot reminder
+CronCreate({
+  "cron": "30 14 15 6 *",
+  "prompt": "Remind the user to deploy the staging release",
+  "recurring": false
+})
+```
+
+Cron jobs fire only while the REPL is idle. Recurring tasks auto-expire after a configurable number of days. Pass `durable: true` to persist jobs to `.claude/scheduled_tasks.json` so they survive session restarts.
+
+```bash
+# Disable the cron scheduler entirely:
+CLAUDE_CODE_DISABLE_CRON=1 claude
+```
+
+## Worktree Isolation
+
+Agents can run in an isolated git worktree so their filesystem changes don't affect the main working directory:
+
+```typescript
+Agent({
+  description: "Refactor auth module",
+  prompt: "Refactor src/auth/ to use the new token interface",
+  isolation: "worktree",  // creates a temporary git worktree
+})
+```
+
+After the agent completes, the worktree is automatically removed if no changes were made. If the agent made commits, the worktree is kept so you can review or merge the changes.

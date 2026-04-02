@@ -1,0 +1,268 @@
+---
+title: "Components"
+description: "Source reference for src/components/ — the React/Ink UI layer that renders Claude Code's interactive terminal interface."
+---
+
+The `src/components/` directory contains all React components. Claude Code's terminal UI is built with [Ink](https://github.com/vadimdemedes/ink) (React for CLIs). Components are organized into functional categories below.
+
+## Core UI
+
+### App.tsx
+
+The root component for interactive sessions. Wraps the component tree with three context providers:
+
+```typescript
+type Props = {
+  getFpsMetrics: () => FpsMetrics | undefined
+  stats?: StatsStore
+  initialState: AppState
+  children: React.ReactNode
+}
+```
+
+Provider order (outer to inner):
+
+1. **`FpsMetricsProvider`** — exposes frame-rate metrics for performance monitoring
+2. **`StatsProvider`** — provides session stats (token counts, cost estimates)
+3. **`AppStateProvider`** — top-level app state with `onChangeAppState` side-effect handler
+
+### Message.tsx
+
+Renders a single message in the conversation. Supports every message type in the normalized message model:
+
+- `NormalizedUserMessage` — user text, image, and tool result messages
+- `AssistantMessage` — text, thinking, tool use, and redacted thinking blocks
+- `AttachmentMessageType` — file/context attachments
+- `SystemMessage` — system-level notices
+- `GroupedToolUseMessageType` — collapsed tool-use groups
+- `CollapsedReadSearchGroupType` — collapsed read/search clusters
+
+Key props include `inProgressToolUseIDs`, `progressMessagesForMessage`, `shouldAnimate`, `isTranscriptMode`, `latestBashOutputUUID` (for auto-expanding bash output), and `lastThinkingBlockId` (for hiding stale thinking blocks in transcript mode).
+
+The component delegates to sub-renderers in `src/components/messages/`:
+
+| Sub-component | Renders |
+|---|---|
+| `AssistantTextMessage` | Assistant prose |
+| `AssistantThinkingMessage` | Extended thinking blocks |
+| `AssistantRedactedThinkingMessage` | Redacted thinking indicator |
+| `AssistantToolUseMessage` | Tool invocation display |
+| `UserTextMessage` | User input text |
+| `UserImageMessage` | Inline images |
+| `UserToolResultMessage` | Tool result content |
+| `SystemTextMessage` | System notices |
+| `CompactSummary` | Compact boundary rendering |
+| `GroupedToolUseContent` | Grouped tool-use blocks |
+| `CollapsedReadSearchContent` | Collapsed read/search results |
+
+### Messages.tsx
+
+Renders the full message list. Wraps `VirtualMessageList` to virtualize the Ink render tree for large conversations.
+
+### MessageRow.tsx
+
+Provides the layout wrapper (margin, width, dot indicator) around each `Message`.
+
+### PromptInput/
+
+The interactive prompt input component. Handles:
+- Multi-line editing with Vim mode support (`VimTextInput`)
+- `@file` path completions via `ContextSuggestions`
+- Slash command completions
+- Paste handling and image attachment
+- Keyboard shortcut routing
+
+---
+
+## Tool output
+
+### BashModeProgress.tsx
+
+Shows an animated progress indicator while a bash command is executing. Displays the truncated command, elapsed time, and a spinner.
+
+### FileEditToolDiff.tsx
+
+Renders the before/after diff for `Edit` tool invocations. Delegates to `StructuredDiff` for line-level diff display.
+
+### StructuredDiff.tsx / StructuredDiff/
+
+Renders unified diffs with syntax highlighting. Supports collapsed unchanged regions and expansion controls. The `StructuredDiff/` subdirectory contains the diff computation utilities.
+
+### HighlightedCode.tsx / HighlightedCode/
+
+Syntax-highlighted code block renderer. Uses a lazy-loaded highlighter (deferred to avoid slowing startup). The `HighlightedCode/` subdirectory contains the language detection and tokenization logic.
+
+---
+
+## Dialogs
+
+### MCPServerApprovalDialog.tsx
+
+Prompts the user to approve or deny a new MCP server connection. Shows the server name, transport type, and command before requesting consent.
+
+### TrustDialog/
+
+Multi-step dialog for establishing trust with a project directory. Shown on first run in a new workspace.
+
+### BypassPermissionsModeDialog.tsx
+
+Warns the user before entering `bypassPermissions` mode, which disables all tool permission checks.
+
+### CostThresholdDialog.tsx
+
+Shown when the session's estimated API cost exceeds the configured threshold. Lets the user continue, set a new threshold, or exit.
+
+### AutoModeOptInDialog.tsx
+
+Opt-in dialog for enabling autonomous (auto-approve) mode.
+
+### IdeAutoConnectDialog.tsx
+
+Guides the user through connecting Claude Code to an IDE extension (VS Code, JetBrains, etc.).
+
+### InvalidConfigDialog.tsx / InvalidSettingsDialog.tsx
+
+Error dialogs shown when `settings.json` or project config files fail validation.
+
+---
+
+## Settings
+
+### Settings/
+
+Full-screen settings panel. Contains sub-components for:
+- Model selection
+- Permission mode
+- Theme
+- Output style
+- Key bindings
+- MCP server management
+
+### ThemePicker.tsx
+
+Inline theme selector. Cycles through available Ink color themes.
+
+### ModelPicker.tsx
+
+Dropdown for selecting the active model (claude-opus, claude-sonnet, claude-haiku, and variants).
+
+### OutputStylePicker.tsx
+
+Selects between output style modes (e.g., `auto`, `stream-json`, `json`).
+
+---
+
+## Session
+
+### SessionPreview.tsx
+
+Renders a summary card for a past session in the session browser. Shows start time, message count, and a truncated first user message.
+
+### ExitFlow.tsx
+
+Orchestrates the exit sequence: prompts for confirmation if there is unsaved work, handles `--dangerously-skip-permissions` warnings, and performs cleanup.
+
+### CompactSummary.tsx
+
+Displays the compact boundary marker — the point in the conversation where earlier messages were summarized and replaced.
+
+### ResumeTask.tsx
+
+UI for resuming a previously backgrounded or crashed task.
+
+---
+
+## IDE integration
+
+### IdeOnboardingDialog.tsx
+
+First-run dialog shown when Claude Code detects a supported IDE environment. Walks the user through installing the corresponding IDE extension.
+
+### IdeStatusIndicator.tsx
+
+Small status badge in the status line showing whether the IDE extension is connected, disconnected, or in an error state.
+
+### ShowInIDEPrompt.tsx
+
+Inline prompt suggesting the user open the current file in their IDE for a richer editing experience.
+
+---
+
+## MCP
+
+### mcp/
+
+Directory containing components for MCP server management:
+- Server list display
+- Per-server connection status
+- Tool discovery and listing
+- Server import/export dialogs
+
+### MCPServerApprovalDialog.tsx
+
+See [Dialogs](#dialogs) above.
+
+### MCPServerDesktopImportDialog.tsx
+
+Dialog for importing MCP server configurations from Claude Desktop's `claude_desktop_config.json`.
+
+### MCPServerMultiselectDialog.tsx
+
+Multi-select dialog for enabling/disabling multiple MCP servers at once.
+
+---
+
+## Auth
+
+### ConsoleOAuthFlow.tsx
+
+Renders the OAuth login flow for `console.anthropic.com`. Displays the authorization URL, a one-time code, and a progress spinner while waiting for the browser callback.
+
+### ApproveApiKey.tsx
+
+Prompts the user to confirm and store a new API key retrieved via the OAuth flow or entered manually.
+
+---
+
+## Additional components
+
+<AccordionGroup>
+  <Accordion title="Agent components">
+    - **`AgentProgressLine.tsx`** — single-line progress display for a running agent
+    - **`CoordinatorAgentStatus.tsx`** — status panel for coordinator mode showing all active teammates
+    - **`agents/`** — sub-components for the agents panel
+    - **`tasks/`** — task list display (`TaskListV2.tsx`)
+  </Accordion>
+
+  <Accordion title="Diff components">
+    - **`diff/`** — additional diff utilities (e.g., patch application preview)
+    - **`StructuredDiffList.tsx`** — renders multiple diffs in a scrollable list
+  </Accordion>
+
+  <Accordion title="Memory components">
+    - **`memory/`** — memory management UI (view, edit, delete memory entries)
+    - **`MemoryUsageIndicator.tsx`** — token usage bar for memory context
+  </Accordion>
+
+  <Accordion title="Remote and teleport">
+    - **`RemoteCallout.tsx`** — banner shown in remote (CCR) sessions
+    - **`TeleportProgress.tsx`** / **`TeleportError.tsx`** — teleport session handoff UI
+    - **`TeleportResumeWrapper.tsx`** — wraps the main UI during teleport resume
+  </Accordion>
+
+  <Accordion title="Sandbox">
+    - **`sandbox/`** — sandbox mode UI components
+    - **`SandboxViolationExpandedView.tsx`** — expanded view for sandbox policy violations
+  </Accordion>
+
+  <Accordion title="Skills">
+    - **`skills/`** — skill browsing and activation UI
+    - **`SkillImprovementSurvey.tsx`** — in-session feedback form for skill quality
+  </Accordion>
+
+  <Accordion title="Teams and Worktrees">
+    - **`teams/`** — team session management UI
+    - **`TeammateViewHeader.tsx`** — header bar for teammate agent panels
+    - **`WorktreeExitDialog.tsx`** — confirms cleanup of a worktree agent's branch
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,206 @@
+---
+title: "Remote Sessions"
+description: "Connect to your Claude Code session from a browser or mobile device using remote session URLs and QR codes."
+---
+
+Claude Code can expose your terminal session to a browser or mobile device. This lets you monitor and continue a long-running coding session from anywhere—without keeping a terminal window open.
+
+## How Remote Sessions Work
+
+When `CLAUDE_CODE_REMOTE=true` is set, Claude Code is running inside a hosted container environment (CCR). Each session gets a unique session ID that maps to a URL on claude.ai:
+
+```
+https://claude.ai/code/{sessionId}
+```
+
+The URL is derived in `src/constants/product.ts`:
+
+```typescript
+// src/constants/product.ts
+export const CLAUDE_AI_BASE_URL = 'https://claude.ai'
+export const CLAUDE_AI_STAGING_BASE_URL = 'https://claude-ai.staging.ant.dev'
+export const CLAUDE_AI_LOCAL_BASE_URL = 'http://localhost:4000'
+
+export function getRemoteSessionUrl(sessionId: string, ingressUrl?: string): string {
+  const compatId = toCompatSessionId(sessionId)
+  const baseUrl = getClaudeAiBaseUrl(compatId, ingressUrl)
+  return `${baseUrl}/code/${compatId}`
+}
+```
+
+### Session ID environments
+
+The base URL is selected automatically based on the session ID format:
+
+| Session ID pattern | Environment | Base URL |
+|---|---|---|
+| Contains `_staging_` | Staging | `https://claude-ai.staging.ant.dev` |
+| Contains `_local_` | Local dev | `http://localhost:4000` |
+| All others | Production | `https://claude.ai` |
+
+## Environment Variables
+
+### `CLAUDE_CODE_REMOTE`
+
+Set to `true` when running inside a CCR (Claude Code Remote) container. This has two effects:
+
+1. Increases the Node.js heap limit to 8192 MB to handle large codebases:
+
+```typescript
+// src/entrypoints/cli.tsx
+if (process.env.CLAUDE_CODE_REMOTE === 'true') {
+  const existing = process.env.NODE_OPTIONS || ''
+  process.env.NODE_OPTIONS = existing
+    ? `${existing} --max-old-space-size=8192`
+    : '--max-old-space-size=8192'
+}
+```
+
+2. Activates remote-mode command filtering in the REPL (see [Safe Commands](#safe-commands) below).
+
+### `CLAUDE_CODE_REMOTE_MEMORY_DIR`
+
+When set alongside `CLAUDE_CODE_REMOTE`, specifies the memory directory path for the remote session. Without this, auto-memory is disabled in remote mode to avoid writing to ephemeral container filesystems.
+
+## Slash Commands
+
+### /session
+
+Run `/session` (or `/remote`) to display the session URL and a scannable QR code:
+
+```
+/session
+```
+
+This command is only available when `CLAUDE_CODE_REMOTE` is set. It shows:
+- The full `https://claude.ai/code/{sessionId}` URL
+- A terminal QR code you can scan with your phone
+
+### /mobile
+
+Run `/mobile` (or `/ios`, `/android`) to display a QR code for downloading the Claude mobile app:
+
+```
+/mobile
+```
+
+This command is always available, regardless of remote mode.
+
+## Safe Commands in Remote Mode
+
+Not all slash commands work when accessed from a remote browser or mobile client. Claude Code maintains two allowlists.
+
+### REMOTE_SAFE_COMMANDS
+
+Commands that work in the local TUI even when the session is in remote mode. These affect only local terminal state:
+
+```typescript
+// src/commands.ts
+export const REMOTE_SAFE_COMMANDS: Set<Command> = new Set([
+  session,     // Shows QR code / URL for remote session
+  exit,        // Exit the TUI
+  clear,       // Clear screen
+  help,        // Show help
+  theme,       // Change terminal theme
+  color,       // Change agent color
+  vim,         // Toggle vim mode
+  cost,        // Show session cost (local cost tracking)
+  usage,       // Show usage info
+  copy,        // Copy last message
+  btw,         // Quick note
+  feedback,    // Send feedback
+  plan,        // Plan mode toggle
+  keybindings, // Keybinding management
+  statusline,  // Status line toggle
+  stickers,    // Stickers
+  mobile,      // Mobile QR code
+])
+```
+
+### BRIDGE_SAFE_COMMANDS
+
+Commands that are safe to execute when the input arrives over the Remote Control bridge (from a mobile or web client). These produce text output and have no terminal-only side effects:
+
+```typescript
+// src/commands.ts
+export const BRIDGE_SAFE_COMMANDS: Set<Command> = new Set([
+  compact,      // Shrink context — useful mid-session from a phone
+  clear,        // Wipe transcript
+  cost,         // Show session cost
+  summary,      // Summarize conversation
+  releaseNotes, // Show changelog
+  files,        // List tracked files
+])
+```
+
+### isBridgeSafeCommand()
+
+The bridge safe-command predicate determines whether an incoming slash command from a remote client may execute:
+
+```typescript
+// src/commands.ts
+export function isBridgeSafeCommand(cmd: Command): boolean {
+  if (cmd.type === 'local-jsx') return false  // renders Ink UI — always blocked
+  if (cmd.type === 'prompt') return true      // expands to text — always safe
+  return BRIDGE_SAFE_COMMANDS.has(cmd)        // 'local' commands need explicit opt-in
+}
+```
+
+| Command type | Bridge behavior |
+|---|---|
+| `prompt` | Always allowed — the command expands to text sent to the model |
+| `local` | Allowed only if listed in `BRIDGE_SAFE_COMMANDS` |
+| `local-jsx` | Always blocked — renders Ink terminal UI that can't stream to a browser |
+
+## Bridge Mode (Remote Control)
+
+Bridge mode (`BRIDGE_MODE` feature flag) turns your local machine into a remote control server. Claude Code running locally connects to CCR and accepts commands from the claude.ai web client, letting you control a remote environment from your browser.
+
+### Starting the bridge
+
+```bash
+# All of these are equivalent:
+claude remote-control
+claude rc
+claude remote
+claude bridge
+```
+
+Bridge mode requires:
+- A claude.ai subscription with Remote Control access
+- Authentication via OAuth (not an API key) — run `claude` and use `/login` inside the REPL
+- The `tengu_ccr_bridge` GrowthBook feature gate to be enabled for your account
+
+### Checking bridge eligibility
+
+```bash
+# First authenticate via OAuth using /login inside the REPL, then:
+claude remote-control
+```
+
+If Remote Control is not enabled for your account, you'll see:
+
+```
+Error: Remote Control is not yet enabled for your account.
+```
+
+### Organization policy
+
+Remote Control can be disabled at the organization level. If your organization has disabled it:
+
+```
+Error: Remote Control is disabled by your organization's policy.
+```
+
+## Memory in Remote Environments
+
+In CCR containers, the filesystem is typically ephemeral. Claude Code handles this by:
+
+- Disabling auto-memory when `CLAUDE_CODE_REMOTE=true` and `CLAUDE_CODE_REMOTE_MEMORY_DIR` is not set
+- Using `CLAUDE_CODE_REMOTE_MEMORY_DIR` to point to a durable mount when available
+- Forwarding both variables to any spawned tmux teammate processes so they use consistent memory paths
+
+```bash
+# Point remote session memory to a durable volume:
+CLAUDE_CODE_REMOTE=true CLAUDE_CODE_REMOTE_MEMORY_DIR=/mnt/persistent/memory claude
+```

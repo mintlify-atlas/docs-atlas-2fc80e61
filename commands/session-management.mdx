@@ -1,0 +1,140 @@
+---
+title: "Session management"
+description: "Commands for managing your Claude Code session: clearing context, resuming past conversations, rewinding to checkpoints, compacting history, and exporting transcripts."
+---
+
+Claude Code keeps your full conversation history in memory throughout a session. These commands let you control that history: compact it when the context window fills up, rewind to an earlier state, resume a past session, or export the transcript.
+
+## /clear
+
+Clear conversation history and start fresh. All prior messages are discarded and the context window is reset.
+
+**Aliases:** `reset`, `new`
+
+```bash
+> /clear
+```
+
+Use `/clear` when you want to start a completely new task without the overhead of prior conversation. This is faster than exiting and reopening Claude Code, because the process keeps running and your configuration stays loaded.
+
+<Note>
+`/clear` wipes the entire conversation. If you want to keep a summary in context, use `/compact` instead.
+</Note>
+
+## /compact
+
+Summarize and compress conversation history. Claude reads your current conversation, generates a summary, and replaces the full history with that summary. This frees up context window tokens so you can keep working in the same session.
+
+```bash
+> /compact
+```
+
+You can optionally pass custom summarization instructions:
+
+```bash
+> /compact focus on the authentication module and ignore any test output
+```
+
+When the context window is nearly full, Claude Code warns you automatically. At that point, running `/compact` is the fastest way to continue without starting over.
+
+<Tip>
+Run `/compact` proactively when you notice responses becoming slower or less accurate, rather than waiting for the warning. Summarizing earlier in a session produces a higher-quality summary.
+</Tip>
+
+**How it works:**
+
+<Steps>
+  <Step title="Pre-compact hooks run">
+    Any configured `pre_compact` lifecycle hooks execute first. This lets you inject additional context or instructions into the summary.
+  </Step>
+  <Step title="Microcompaction">
+    Tool call outputs and redundant content are stripped to reduce the payload before the full summary is generated.
+  </Step>
+  <Step title="Summary generation">
+    Claude generates a prose summary of the conversation using a dedicated compaction prompt.
+  </Step>
+  <Step title="History replacement">
+    The conversation history is replaced with the summary. Claude continues from this condensed context.
+  </Step>
+</Steps>
+
+## /resume
+
+Resume a previous conversation. Running `/resume` with no arguments opens an interactive picker that lists your past sessions. You can also pass a conversation ID or a search term to jump directly to a session.
+
+**Alias:** `continue`
+
+```bash
+# Open the interactive session picker
+> /resume
+
+# Resume by search term
+> /resume authentication refactor
+
+# Resume by session ID
+> /resume conv_01abc123
+```
+
+Sessions are stored locally and indexed by their content. The picker shows a preview of each conversation so you can identify the right one quickly.
+
+## /rewind
+
+Restore both the code and the conversation to a previous checkpoint. Claude Code creates checkpoints automatically as you work. `/rewind` presents a list of checkpoints and lets you pick one to restore to.
+
+**Alias:** `checkpoint`
+
+```bash
+> /rewind
+```
+
+After rewinding, the conversation history and any file edits made after the selected checkpoint are undone. This is useful when an approach is not working and you want to try a different direction from an earlier point.
+
+<Warning>
+Rewinding undoes file changes made after the checkpoint. Make sure you have committed or saved any work you want to keep before using `/rewind`.
+</Warning>
+
+## /export
+
+Export the current conversation to a file or your clipboard.
+
+```bash
+# Interactive export (prompts for format and destination)
+> /export
+
+# Export to a specific file
+> /export session-notes.md
+```
+
+The exported transcript includes the full conversation in a readable format. Use this to share a session with a teammate, save a record of a debugging session, or archive a long planning conversation.
+
+## /session
+
+Show the remote session URL and QR code. This command is only available when you start Claude Code in remote mode with `claude --remote`.
+
+**Alias:** `remote`
+
+```bash
+> /session
+```
+
+When running in remote mode, `/session` displays:
+- A QR code you can scan with your phone
+- The full URL for the web-based session view
+
+This lets you hand off from the terminal to a browser, or share a live session with someone else.
+
+<Note>
+`/session` requires Claude Code to be started with `claude --remote`. If you run it in a standard session, it shows a message explaining that remote mode is not active.
+</Note>
+
+## /exit
+
+Exit the REPL and return to your shell.
+
+**Alias:** `quit`
+
+```bash
+> /exit
+```
+
+You can also press `ctrl+c` twice or `ctrl+d` to exit.

@@ -1,0 +1,199 @@
+---
+title: "MCP"
+description: "Manage Model Context Protocol servers with /mcp. Enable and disable servers, check connection status, and understand how MCP extends Claude with custom tools and resources."
+---
+
+The Model Context Protocol (MCP) is an open standard for connecting external tools, APIs, and data sources to AI models. Claude Code acts as an MCP client: it connects to MCP servers you configure, and those servers expose tools and resources that Claude can call during a conversation.
+
+The `/mcp` command is the primary interface for managing MCP server connections at runtime.
+
+## /mcp
+
+Open the MCP server management panel. Displays the status of all configured servers — which are connected, which are disabled, and which have errors.
+
+```bash
+> /mcp
+```
+
+The panel shows each server with its:
+- Connection state (`connected`, `disabled`, `error`)
+- Server type (`stdio`, `sse`, or in-process)
+- Available tools and resource counts
+
+### Enable a server
+
+```bash
+> /mcp enable <server-name>
+```
+
+Enables a previously disabled server and attempts to connect. If you omit the server name, all disabled servers are enabled.
+
+```bash
+# Enable a specific server
+> /mcp enable github
+
+# Enable all disabled servers
+> /mcp enable
+```
+
+### Disable a server
+
+```bash
+> /mcp disable <server-name>
+```
+
+Disconnects a server and marks it as disabled. Claude can no longer call its tools for the rest of the session.
+
+```bash
+# Disable a specific server
+> /mcp disable github
+
+# Disable all servers
+> /mcp disable
+```
+
+### Reconnect a server
+
+```bash
+> /mcp reconnect <server-name>
+```
+
+Closes and reopens the connection to a server. Use this when a server has entered an error state and you want to retry without restarting Claude Code.
+
+```bash
+> /mcp reconnect filesystem
+```
+
+## MCP server types
+
+MCP servers communicate with Claude Code using one of three transports:
+
+<CardGroup cols={3}>
+  <Card title="stdio" icon="terminal">
+    The server runs as a child process. Claude Code writes to its stdin and reads from its stdout. Most local MCP servers use this transport.
+  </Card>
+  <Card title="SSE" icon="wifi">
+    The server is a remote HTTP service. Claude Code connects over Server-Sent Events. Used for cloud-hosted MCP servers.
+  </Card>
+  <Card title="In-process" icon="cpu">
+    The server runs directly inside the Claude Code process. Used for built-in servers like the IDE integration.
+  </Card>
+</CardGroup>
+
+## Configuring MCP servers
+
+MCP servers are configured in your Claude Code settings file at `~/.claude/settings.json` (user-level) or `.claude/settings.json` in your project (project-level). Project-level settings take precedence.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+    },
+    "github": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..."
+      }
+    },
+    "my-remote-server": {
+      "type": "sse",
+      "url": "https://my-mcp-server.example.com/sse"
+    }
+  }
+}
+```
+
+After editing settings, run `/reload-plugins` to apply changes to the running session without restarting.
+
+## Authentication
+
+MCP servers that require authentication use one of two approaches:
+
+**API keys via environment variables**
+
+Pass secrets as environment variables in the server config. Claude Code injects them into the server process environment:
+
+```json
+{
+  "mcpServers": {
+    "my-api": {
+      "type": "stdio",
+      "command": "my-mcp-server",
+      "env": {
+        "API_KEY": "sk-..."
+      }
+    }
+  }
+}
+```
+
+**OAuth**
+
+Some remote MCP servers use OAuth. When you first connect to an OAuth-protected server, Claude Code opens your browser to complete the authorization flow. The token is stored locally and used for subsequent connections.
+
+## MCP skills
+
+MCP servers can expose not just tools (callable by Claude) but also **prompts** — predefined prompt templates that become slash commands in the Claude Code REPL. These are called MCP skills.
+
+When an MCP server provides prompts, they appear in the `/skills` list and in the command picker alongside your locally defined skills. You can invoke them like any other slash command:
+
+```bash
+# If an MCP server provides a "summarize-pr" prompt
+> /summarize-pr 42
+```
+
+MCP skills behave like built-in prompt-type commands: Claude receives the expanded prompt and acts on it using whatever tools are available.
+
+<Info>
+MCP skills are only available when the MCP_SKILLS feature flag is enabled on your build of Claude Code.
+</Info>
+
+## Example: full /mcp workflow
+
+```bash
+# 1. Check which servers are connected
+> /mcp
+
+  ● filesystem   connected   12 tools
+  ● github       connected    8 tools
+  ○ postgres     disabled
+
+# 2. Enable the postgres server
+> /mcp enable postgres
+
+  MCP server "postgres" enabled
+
+# 3. Verify connection
+> /mcp
+
+  ● filesystem   connected   12 tools
+  ● github       connected    8 tools
+  ● postgres     connected    5 tools
+
+# 4. Disable the filesystem server to restrict file access
+> /mcp disable filesystem
+
+  MCP server "filesystem" disabled
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Server shows 'error' state">
+    Run `/mcp reconnect <server-name>` to retry. If it fails again, check that the server binary is installed and accessible in your `PATH`. For stdio servers, try running the command directly in your terminal to see error output.
+  </Accordion>
+  <Accordion title="Tools from a server are not appearing">
+    Make sure the server is in `connected` state in `/mcp`. If the server connected but you do not see its tools, run `/reload-plugins` to force a refresh of the tool list.
+  </Accordion>
+  <Accordion title="OAuth flow does not open a browser">
+    If Claude Code cannot open a browser, it prints the authorization URL to the terminal. Copy and open it manually, complete the flow, and the token will be saved automatically.
+  </Accordion>
+  <Accordion title="Changes to settings.json are not taking effect">
+    Run `/reload-plugins` after editing `settings.json`. MCP server configurations are read when the session starts, and `/reload-plugins` re-reads them without requiring a restart.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,223 @@
+---
+title: "Skills"
+description: "Prompt-based commands that Claude can invoke as tools or that you can call with a slash command."
+---
+
+Skills are markdown files with YAML frontmatter that define reusable prompts. Claude can invoke them programmatically as tools, and you can trigger them manually with `/skill-name`. Skills live on disk, ship inside plugins, come from MCP servers, or are bundled directly into the CLI.
+
+## How skills work
+
+When Claude Code starts, it scans skill directories and registers each skill as both a slash command and a tool. The model sees the skill's `description` and `when_to_use` fields in its context window, which tell it when to call the skill automatically. The full markdown body is only loaded at invocation time, keeping context usage low.
+
+## Skill sources
+
+Skills are loaded from four sources, identified by the `loadedFrom` field:
+
+| Source | `loadedFrom` | Where |
+|--------|-------------|-------|
+| User-created files | `skills` | `~/.claude/skills/` and `.claude/skills/` in the project tree |
+| Built into the CLI | `bundled` | Compiled into the binary at build time |
+| Installed plugin | `plugin` | Plugin's `skills/` directory |
+| MCP server prompt | `mcp` | Exposed as a prompt by a connected MCP server |
+
+Priority order when the same skill name appears in multiple sources: managed policy > user > project > additional dirs > legacy commands.
+
+## Skill directory structure
+
+Skills in `~/.claude/skills/` or `.claude/skills/` must use the **directory format** — a folder named after the skill, containing a `SKILL.md` file:
+
+```
+.claude/
+└── skills/
+    ├── code-review/
+    │   └── SKILL.md
+    ├── summarize/
+    │   └── SKILL.md
+    └── deploy-check/
+        ├── SKILL.md
+        └── checklist.md       ← side-file the skill can reference
+```
+
+Single `.md` files are **not** supported in the `skills/` directory. The skill name is taken from the directory name (e.g., `code-review` becomes `/code-review`).
+
+<Note>
+The legacy `.claude/commands/` directory supports single `.md` files, but `skills/` requires the directory-per-skill layout. New skills should use `skills/`.
+</Note>
+
+## SKILL.md frontmatter
+
+```markdown
+---
+description: "Performs a thorough security-focused code review."
+when_to_use: "Use this when reviewing code that handles authentication, authorization, or user data."
+allowed-tools: Read, Grep, Bash
+argument-hint: "[file or directory to review]"
+disable-model-invocation: false
+user-invocable: true
+model: claude-opus-4-5
+effort: high
+paths:
+  - src/**
+  - lib/**
+---
+
+Review the following code for security issues...
+```
+
+### Frontmatter fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `description` | `string` | Shown to the model and in `/skills`. Falls back to first paragraph of the body. |
+| `when_to_use` | `string` | Guidance for the model on when to invoke this skill automatically. |
+| `allowed-tools` | `string` | Comma-separated list of tools the skill is allowed to call (e.g., `Read, Bash`). |
+| `argument-hint` | `string` | Displayed hint for slash-command arguments (e.g., `"[file]"`). |
+| `disable-model-invocation` | `boolean` | When `true`, the skill's body is injected as a system message rather than sent to the model. Default: `false`. |
+| `user-invocable` | `boolean` | When `false`, the skill is hidden from slash-command listings and only callable by the model. Default: `true`. |
+| `model` | `string` | Override the model for this skill (e.g., `claude-haiku-4-5`). |
+| `effort` | `string \| int` | Effort level: `low`, `medium`, `high`, or an integer 1–5. |
+| `paths` | `string[]` | Gitignore-style path patterns. Skill only activates when Claude touches matching files. |
+| `arguments` | `string \| string[]` | Named argument placeholders that get substituted into the prompt body. |
+| `context` | `"fork"` | Run the skill in a forked sub-context. |
+| `agent` | `string` | Route invocation to a specific agent. |
+| `hooks` | `HooksSettings` | Per-skill hooks that run when this skill executes. |
+| `name` | `string` | Display name override (the directory name is still the command slug). |
+
+### Template variables
+
+Inside the skill body, you can use:
+
+| Variable | Replaced with |
+|----------|---------------|
+| `${CLAUDE_SKILL_DIR}` | Absolute path to the skill's own directory |
+| `${CLAUDE_SESSION_ID}` | Current session ID |
+| `$ARGUMENTS` | Full argument string passed to the skill |
+| `$1`, `$2`, … | Positional named arguments (if `arguments:` frontmatter is set) |
+
+## Creating a skill
+
+<Steps>
+  <Step title="Create the skill directory">
+    ```bash
+    mkdir -p .claude/skills/my-skill
+    ```
+  </Step>
+  <Step title="Write SKILL.md">
+    ```markdown
+    ---
+    description: "Adds a changelog entry for the current change."
+    when_to_use: "Use after making code changes when the user mentions a release or wants to document what changed."
+    allowed-tools: Read, Write, Bash
+    argument-hint: "[version]"
+    ---
+
+    You are updating the project changelog. Read the git diff since the last tag:
+
+    !`git log --oneline $(git describe --tags --abbrev=0)..HEAD`
+
+    Add a new entry under ## Unreleased in CHANGELOG.md following Keep a Changelog format.
+    If a version argument was provided ($ARGUMENTS), create a new versioned section instead.
+    ```
+  </Step>
+  <Step title="Verify it loaded">
+    Type `/skills` in Claude Code to list all available skills and confirm yours appears.
+  </Step>
+</Steps>
+
+## Inline shell execution
+
+Skill bodies support inline shell commands using the `!` prefix inside backtick blocks. These execute when the skill is invoked and their output is spliced into the prompt:
+
+```markdown
+Current git status:
+!`git status --short`
+
+Recent commits:
+!`git log --oneline -10`
+```
+
+<Warning>
+Inline shell commands (`!`...``) do not run for MCP-sourced skills. MCP skills are remote and untrusted — `${CLAUDE_SKILL_DIR}` is also unavailable for them.
+</Warning>
+
+## Bundled vs custom skills
+
+**Bundled skills** ship compiled into the Claude Code binary. They are registered via `registerBundledSkill()` at startup and have `source: 'bundled'`. Users cannot modify them, but plugins can override them by name.
+
+**Custom skills** live on disk under `~/.claude/skills/` (user scope) or `.claude/skills/` (project scope). They support all frontmatter fields and can include side-files in the skill directory that the model can `Read` or `Grep`.
+
+Bundled skills can include reference files via the `files` field in their definition:
+
+```typescript
+registerBundledSkill({
+  name: 'my-skill',
+  description: 'Does something useful.',
+  files: {
+    'reference.md': '# Reference\n...',
+    'examples/basic.ts': '// example code',
+  },
+  async getPromptForCommand(args, ctx) {
+    return [{ type: 'text', text: 'Use the files in ${CLAUDE_SKILL_DIR}...' }]
+  },
+})
+```
+
+On first invocation, these files are extracted to a per-process temp directory under a random nonce so the model can read them on demand.
+
+## Dynamic skill discovery
+
+Claude Code discovers skills at runtime as files are read or written. When you `Read` a file inside a subdirectory that has a `.claude/skills/` folder, that folder is loaded automatically. Deeper paths take precedence over shallower ones.
+
+The `getDynamicSkills()` function returns all skills discovered this way:
+
+```typescript
+// src/skills/loadSkillsDir.ts
+export function getDynamicSkills(): Command[] {
+  return Array.from(dynamicSkills.values())
+}
+```
+
+Subscribers listen for new discoveries via `onDynamicSkillsLoaded()`:
+
+```typescript
+const unsubscribe = onDynamicSkillsLoaded(() => {
+  // refresh tool listings
+})
+```
+
+## Conditional skills (path-based activation)
+
+Skills with a `paths:` frontmatter field are **conditional**: they stay dormant until Claude operates on a file matching the pattern. This keeps the context window lean — the skill only appears as an available tool when it's relevant.
+
+```markdown
+---
+description: "Runs database migration checks."
+paths:
+  - db/migrations/**
+  - src/models/**
+---
+```
+
+When Claude reads or edits a file under `db/migrations/`, the skill activates for the rest of the session. Patterns follow gitignore syntax.
+
+## The /skills command
+
+Type `/skills` to list all skills currently available in the session. The output shows each skill's name, source, and description.
+
+## Namespaced skills
+
+Skills in subdirectories under `.claude/skills/` use colon-separated namespaces. A skill at `.claude/skills/db/migrate/SKILL.md` is invoked as `/db:migrate`.
+
+## Token budget
+
+Claude Code estimates the token cost of each skill from its `description` and `when_to_use` fields alone (not the full body). This lets hundreds of skills coexist without overwhelming the context window:
+
+```typescript
+// src/skills/loadSkillsDir.ts:100
+export function estimateSkillFrontmatterTokens(skill: Command): number {
+  const frontmatterText = [skill.name, skill.description, skill.whenToUse]
+    .filter(Boolean)
+    .join(' ')
+  return roughTokenCountEstimation(frontmatterText)
+}
+```

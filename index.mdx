@@ -1,97 +1,84 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Claude Code"
+description: "Anthropic's AI-powered CLI coding agent — recovered source from version 2.1.88"
 ---
 
-## Setting up
+Claude Code is a sophisticated AI-powered command-line coding agent built by Anthropic. It combines a rich terminal UI (powered by React and Ink), an extensive tool suite, deep MCP (Model Context Protocol) integration, a flexible plugin and skills system, and multi-agent coordination — all from your terminal.
 
-Get your documentation site up and running in minutes.
+This documentation is based on the recovered source code of `@anthropic-ai/claude-code` version `2.1.88`, which was accidentally published to npm with full source maps included.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get Claude Code running and make your first AI-assisted edit in minutes
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Install from npm or the Tencent mirror cache for version 2.1.88
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Command Reference" icon="terminal" href="/commands/overview">
+    Explore the full list of slash commands and flags
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="MCP Integration" icon="plug" href="/extensibility/mcp-integration">
+    Connect external tools via the Model Context Protocol
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is Claude Code?
 
-Everything you need to create world-class documentation.
+Claude Code operates as an interactive REPL in your terminal. You describe what you want — in plain language — and Claude plans, edits files, runs shell commands, searches the web, and iterates until the task is done. It uses a battle-tested tool system to interact with your codebase safely.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Install Claude Code">
+    Install the CLI globally via npm or the Tencent mirror cache:
 
-## Need inspiration?
+    ```bash
+    npm install -g https://mirrors.cloud.tencent.com/npm/@anthropic-ai/claude-code/-/claude-code-2.1.88.tgz
+    ```
+  </Step>
+  <Step title="Authenticate">
+    Run `claude` and follow the login prompt, or set your API key:
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    ```bash
+    export ANTHROPIC_API_KEY=sk-ant-...
+    claude
+    ```
+  </Step>
+  <Step title="Start coding">
+    Type any natural-language request inside the REPL and Claude will handle the rest — reading files, editing code, running tests, and more.
+
+    ```
+    > Refactor the auth module to use async/await throughout
+    ```
+  </Step>
+  <Step title="Extend with plugins and skills">
+    Add custom commands, connect MCP servers, or write your own skills to extend Claude's capabilities for your workflow.
+  </Step>
+</Steps>
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Rich tool suite" icon="wrench" href="/concepts/tools">
+    BashTool, FileEditTool, GlobTool, GrepTool, WebFetchTool, WebSearchTool, NotebookEditTool, and more — all with fine-grained permission controls
+  </Card>
+  <Card title="MCP servers" icon="server" href="/commands/mcp">
+    Add, enable, and disable Model Context Protocol servers that extend Claude's capabilities with custom tools and resources
+  </Card>
+  <Card title="Skills and plugins" icon="puzzle-piece" href="/extensibility/skills">
+    Create reusable prompt-based skills and full plugin packages that add commands, tools, and bundled knowledge
+  </Card>
+  <Card title="Multi-agent coordination" icon="sitemap" href="/advanced/multi-agent">
+    Spawn sub-agents for parallel workloads, coordinate async tasks, and use the built-in task management system
+  </Card>
+  <Card title="Remote sessions" icon="wifi" href="/advanced/remote-sessions">
+    Continue sessions from a mobile device or web browser, with the same context and tools as your terminal session
+  </Card>
+  <Card title="Memory system" icon="brain" href="/commands/config">
+    Persistent project and user memory files let Claude retain context across sessions automatically
+  </Card>
+</CardGroup>
+
+## Source code note
+
+<Note>
+This documentation is based on the recovered source of `@anthropic-ai/claude-code@2.1.88`. The original package was pulled from npm shortly after release. The source was recovered from the `cli.js.map` source map file (57 MB) which contained the full `sourcesContent` — totalling approximately 700,000 lines of TypeScript. This is an unofficial, research-only repository. All copyright and trademarks belong to Anthropic.
+</Note>

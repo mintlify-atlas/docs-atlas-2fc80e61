@@ -1,0 +1,124 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Claude Code",
+  "projectDescription": "Claude Code is Anthropic's AI-powered CLI coding agent that uses React/Ink for terminal UI, supports MCP (Model Context Protocol), plugins, skills, and multi-agent coordination directly from the command line.",
+  "theme": "luma",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/command-system",
+              "concepts/tools",
+              "concepts/permissions"
+            ]
+          },
+          {
+            "group": "Commands",
+            "pages": [
+              "commands/overview",
+              "commands/session-management",
+              "commands/code-review",
+              "commands/mcp",
+              "commands/config"
+            ]
+          },
+          {
+            "group": "Extensibility",
+            "pages": [
+              "extensibility/skills",
+              "extensibility/plugins",
+              "extensibility/mcp-integration",
+              "extensibility/hooks"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/multi-agent",
+              "advanced/remote-sessions",
+              "advanced/feature-flags",
+              "advanced/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Source Reference",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "reference/entrypoints",
+              "reference/components",
+              "reference/services"
+            ]
+          },
+          {
+            "group": "Tools Reference",
+            "pages": [
+              "reference/tools/file-tools",
+              "reference/tools/shell-tools",
+              "reference/tools/web-tools",
+              "reference/tools/agent-tools"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-powered CLI coding agent with React/Ink terminal UI",
+    "Model Context Protocol (MCP) server management and integration",
+    "Extensible plugin and skills system for custom commands",
+    "Multi-agent coordination with async task management",
+    "Rich tool suite: file editing, bash execution, web search, notebooks",
+    "Remote session support for mobile and web clients",
+    "Feature flag system for build-time code elimination",
+    "Integrated memory system for project and session context",
+    "OAuth and API key authentication with multiple providers"
+  ],
+  "publicApiSurface": [
+    "claude (main CLI entrypoint)",
+    "/mcp [enable|disable <server-name>] — manage MCP servers",
+    "/login — authenticate with Anthropic or console API key",
+    "/logout — remove stored credentials",
+    "/review — AI code review for current changes",
+    "/config — view and modify configuration",
+    "/memory — manage project and user memory files",
+    "/permissions — manage tool permission settings",
+    "/skills — list and manage available skills",
+    "/session — manage and share sessions",
+    "/tasks — view and manage async background tasks",
+    "/plan — toggle plan mode for multi-step coding",
+    "/hooks — configure lifecycle event hooks",
+    "/model — switch the active Claude model",
+    "/compact — compact conversation context",
+    "BashTool — execute shell commands",
+    "FileEditTool — edit files with surgical precision",
+    "FileReadTool — read file contents",
+    "FileWriteTool — write new files",
+    "GlobTool — find files by pattern",
+    "GrepTool — search file contents",
+    "WebFetchTool — fetch URLs",
+    "WebSearchTool — web search",
+    "AgentTool — spawn sub-agents",
+    "MCPTool — invoke MCP server tools",
+    "TodoWriteTool — manage task lists"
+  ]
+}

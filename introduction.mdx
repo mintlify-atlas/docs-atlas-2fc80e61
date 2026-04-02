@@ -1,0 +1,112 @@
+---
+title: "Introduction"
+description: "Claude Code is Anthropic's AI-powered CLI coding agent. This documentation explores its architecture through the recovered source of version 2.1.88."
+---
+
+Claude Code is a production-grade, AI-powered coding agent that runs entirely in your terminal. Built by Anthropic, it combines a React/Ink terminal UI, an extensive tool suite, deep MCP integration, a plugin and skills system, and multi-agent coordination — all driven by natural language.
+
+<Warning>
+  This is an **unofficial, research-only** project. The source code was recovered from the `cli.js.map` file accidentally included in `@anthropic-ai/claude-code@2.1.88`. All copyright and trademarks belong to Anthropic. Do not use this for commercial purposes without evaluating applicable licenses and legal risk.
+</Warning>
+
+## What is Claude Code?
+
+Claude Code operates as an interactive REPL. You describe a task in plain English — "add error handling to my Express routes", "write tests for the auth module", "find and fix the memory leak" — and the agent plans, reads files, runs commands, edits code, and iterates until the task is done.
+
+It is not a wrapper around a chat API. Claude Code is a fully stateful agent loop with:
+
+- Persistent memory across sessions (per-project and per-user)
+- Fine-grained tool permissions with user-approval workflows
+- A multi-agent subsystem for spawning parallel sub-agents
+- A plugin and skills system for extending commands and bundling knowledge
+- OAuth-based authentication with `claude.ai`, alongside direct API key support
+
+## The source recovery story
+
+On **March 31, 2026**, Anthropic published `@anthropic-ai/claude-code@2.1.88` to npm. The release bundle included `cli.js.map` — a **57 MB source map** with the full `sourcesContent` array intact.
+
+That single file contained approximately **700,000 lines of TypeScript** covering every module in the codebase: the React/Ink terminal UI, the command system, all tool implementations, the MCP client, the bridge/remote-control subsystem, and more.
+
+The package was pulled from npm shortly after, but the Tencent npm mirror had already cached it. The source was extracted from `sourcesContent`, reconstructed into a proper directory tree, and forms the basis of this documentation.
+
+<Note>
+  The recovered source uses `bun:bundle` macros (`feature(...)`) for build-time dead-code elimination and `MACRO.VERSION` for inlining the version string. These are Bun-specific build primitives and are not runnable as-is without the original build toolchain.
+</Note>
+
+## Architectural highlights
+
+<CardGroup cols={2}>
+  <Card title="React/Ink terminal UI" icon="display">
+    The entire interactive REPL — input handling, streaming output, progress indicators, diff views — is built with React components rendered to the terminal via the Ink library. State management uses React hooks throughout.
+  </Card>
+  <Card title="Extensible command system" icon="terminal">
+    Commands are loaded from four sources at runtime: built-in commands, dynamic skill directories, installed plugins, and MCP servers. The loader in `src/commands.ts` memoizes the merged command list and supports hot-reload via `/reload-plugins`.
+  </Card>
+  <Card title="Model Context Protocol" icon="plug">
+    Claude Code is a first-class MCP client. You can add MCP servers that expose custom tools and resources, managed through the `/mcp` command. The MCP implementation covers connection management, capability negotiation, and tool dispatch.
+  </Card>
+  <Card title="Skills and plugins" icon="puzzle-piece">
+    Skills are prompt-based command extensions loaded from a directory. Plugins are full npm-style packages that can add commands, tools, and bundled knowledge. Both are managed at runtime without restarting the CLI.
+  </Card>
+  <Card title="Multi-agent coordination" icon="sitemap">
+    Claude Code can spawn sub-agents via `AgentTool` to run parallel workloads. The `/tasks` and `/plan` commands expose a built-in task graph for orchestrating multi-step work across multiple agent instances.
+  </Card>
+  <Card title="Remote sessions" icon="wifi">
+    The bridge/remote-control subsystem (`src/bridge/`) lets you expose your local machine as a Claude Code environment accessible from `claude.ai`, a mobile device, or another machine. Session IDs are routed through a WebSocket ingress layer.
+  </Card>
+</CardGroup>
+
+## Project structure
+
+The recovered source is organized under `src/` with clear separation of concerns:
+
+| Directory | Contents |
+|---|---|
+| `src/entrypoints/` | CLI bootstrap (`cli.tsx`), fast-path dispatch for flags like `--version`, `--daemon-worker`, `remote-control`, and `--bg` |
+| `src/commands/` | One subdirectory per slash command — `login`, `mcp`, `review`, `tasks`, `plan`, `config`, `memory`, `session`, `skills`, `plugin`, and ~50 more |
+| `src/components/` | React/Ink terminal UI components — the REPL input loop, streaming message renderer, diff viewer, permission prompts, onboarding flows |
+| `src/services/` | Core business logic — policy limits, remote capability negotiation, skill search, sync, and more |
+| `src/hooks/` | React hooks for terminal state — input focus, window resize, session lifecycle, streaming state |
+| `src/utils/` | Cross-cutting utilities — authentication (`auth.ts`), config file management, file I/O, process management, startup profiling, model selection |
+| `src/tools/` | Tool implementations — `BashTool`, `FileEditTool`, `GlobTool`, `GrepTool`, `WebFetchTool`, `WebSearchTool`, `NotebookEditTool`, `AgentTool`, and more |
+| `src/bridge/` | Remote-control and bridge subsystem — WebSocket transport, session ID compatibility shims, ingress URL routing |
+| `src/skills/` | Skill loader — reads skill directories, resolves bundled skills, merges with plugin skills |
+| `src/plugins/` | Plugin loader — discovers and loads npm-style plugin packages, exposes their commands and tools |
+| `src/daemon/` | Long-running supervisor process for background session management |
+| `src/constants/` | Product URLs, prompt constants, model lists, feature flag declarations |
+| `src/ink/` | Customized Ink rendering infrastructure — patches and extensions on top of the upstream Ink library |
+
+<Tip>
+  The best entry point for understanding the codebase is `src/entrypoints/cli.tsx` for the bootstrap flow, then `src/commands.ts` for the full command registry, and `src/main.ts` for the main agent loop.
+</Tip>
+
+## Feature flags
+
+The source makes heavy use of `feature('FLAG_NAME')` calls — a `bun:bundle` macro that performs **build-time dead-code elimination**. In the published binary, feature-gated code paths that are disabled simply do not exist in the bundle. The recovered source shows all paths, including internal Anthropic-only features:
+
+<AccordionGroup>
+  <Accordion title="BRIDGE_MODE">
+    Enables `claude remote-control` / `claude rc` — serve your local machine as a remote Claude Code environment. Requires OAuth login with `claude.ai`.
+  </Accordion>
+  <Accordion title="DAEMON">
+    Enables the long-running `claude daemon` supervisor and `--daemon-worker` flag for background session management.
+  </Accordion>
+  <Accordion title="BG_SESSIONS">
+    Enables `claude ps`, `claude logs`, `claude attach`, `claude kill`, and the `--bg` / `--background` flags for detached background sessions.
+  </Accordion>
+  <Accordion title="KAIROS / KAIROS_BRIEF / KAIROS_GITHUB_WEBHOOKS">
+    A suite of flags for proactive agent behavior, brief command generation, and GitHub webhook subscriptions. Ant-only (Anthropic internal).
+  </Accordion>
+  <Accordion title="VOICE_MODE">
+    Enables the `/voice` command for voice input to the REPL.
+  </Accordion>
+  <Accordion title="CHICAGO_MCP / COMPUTER_USE">
+    Enables the `--computer-use-mcp` server flag for computer-use (screen control) capabilities.
+  </Accordion>
+</AccordionGroup>
+
+## Disclaimer
+
+<Warning>
+  **This is not an official Anthropic project.** The source code was recovered from a source map and is published here for archival and research purposes only. The original code, copyright, and all associated intellectual property belong to Anthropic. This project does not represent Anthropic's views or intentions. If you need to redistribute or use this commercially, assess the applicable licenses and legal risk independently.
+</Warning>

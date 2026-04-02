@@ -1,0 +1,404 @@
+---
+title: "MCP Integration"
+description: "Connect Claude Code to external tools and data sources using the Model Context Protocol."
+---
+
+The Model Context Protocol (MCP) is an open standard for connecting AI models to external tools, services, and data. Claude Code acts as an MCP client: it connects to MCP servers, discovers their tools and resources, and exposes them to the model as first-class capabilities.
+
+## What MCP servers provide
+
+An MCP server can expose three types of capabilities:
+
+| Capability | What it is | How Claude uses it |
+|-----------|-----------|-------------------|
+| **Tools** | Functions the model can call | Appear as callable tools (e.g., `mcp__slack__send_message`) |
+| **Resources** | Files, database rows, API responses | Browsed via `ListMcpResources` and read via `ReadMcpResource` |
+| **Prompts** | Reusable prompt templates | Registered as skills, invocable with `/skill-name` |
+
+## Server transport types
+
+Claude Code supports five transport types, defined in `src/services/mcp/types.ts`:
+
+```typescript
+// src/services/mcp/types.ts
+export const TransportSchema = lazySchema(() =>
+  z.enum(['stdio', 'sse', 'sse-ide', 'http', 'ws', 'sdk']),
+)
+```
+
+<AccordionGroup>
+  <Accordion title="stdio — subprocess">
+    The most common type. Claude Code spawns a child process and communicates over stdin/stdout. Use this for local tools, language servers, and scripts.
+
+    ```json
+    {
+      "mcpServers": {
+        "filesystem": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+          "env": {
+            "NODE_ENV": "production"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="sse — HTTP server (Server-Sent Events)">
+    Connects to a running HTTP server over SSE. Supports OAuth authentication and custom headers.
+
+    ```json
+    {
+      "mcpServers": {
+        "my-api": {
+          "type": "sse",
+          "url": "https://api.example.com/mcp",
+          "headers": {
+            "Authorization": "Bearer $MY_API_KEY"
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="http — Streamable HTTP">
+    Like SSE but uses the newer MCP Streamable HTTP transport. Preferred for new remote servers.
+
+    ```json
+    {
+      "mcpServers": {
+        "remote-tools": {
+          "type": "http",
+          "url": "https://tools.example.com/mcp",
+          "oauth": {
+            "clientId": "my-client-id",
+            "callbackPort": 8765
+          }
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="ws — WebSocket">
+    Bidirectional WebSocket transport. Useful for servers that push events to the client.
+
+    ```json
+    {
+      "mcpServers": {
+        "realtime": {
+          "type": "ws",
+          "url": "wss://realtime.example.com/mcp"
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="sdk — in-process (IDE extensions)">
+    Special transport for IDE extension integrations. The SDK manages the connection; Claude Code routes tool calls back to it. Not user-configurable.
+  </Accordion>
+</AccordionGroup>
+
+## Configuration scopes
+
+MCP server configs are stored in four scopes with the following precedence (highest wins):
+
+| Scope | Storage | Use case |
+|-------|---------|---------|
+| `local` | Per-project local config (gitignored) | Developer-specific overrides |
+| `project` | `.mcp.json` in project tree | Shared team config, committed to git |
+| `user` | `~/.claude/settings.json` | Personal servers used across projects |
+| `enterprise` | Managed policy file | IT-controlled servers (exclusive when present) |
+
+When an enterprise MCP config file exists, all other scopes are ignored — it has exclusive control.
+
+## Adding an MCP server
+
+<Tabs>
+  <Tab title="Via /mcp command">
+    ```
+    /mcp add stdio filesystem npx -y @modelcontextprotocol/server-filesystem /workspace
+    /mcp add sse my-api --url https://api.example.com/mcp --scope project
+    ```
+  </Tab>
+  <Tab title="Via .mcp.json (project)">
+    Create or edit `.mcp.json` in your project root:
+
+    ```json
+    {
+      "mcpServers": {
+        "filesystem": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+          "env": {}
+        },
+        "github": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-github"],
+          "env": {
+            "GITHUB_PERSONAL_ACCESS_TOKEN": "$GITHUB_TOKEN"
+          }
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Via user settings">
+    Add to `~/.claude/settings.json`:
+
+    ```json
+    {
+      "mcpServers": {
+        "my-server": {
+          "command": "/usr/local/bin/my-mcp-server",
+          "args": ["--verbose"]
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Environment variable expansion
+
+String values in MCP configs support `$VAR` and `${VAR}` substitution at load time. This keeps secrets out of committed config files.
+
+```json
+{
+  "mcpServers": {
+    "openai": {
+      "type": "sse",
+      "url": "https://api.openai.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${OPENAI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+If a referenced variable is not set, Claude Code logs a warning and leaves the placeholder unexpanded. The server will still attempt to connect.
+
+The expansion is handled by `expandEnvVarsInString()` in `src/services/mcp/envExpansion.ts` and applied uniformly to `command`, `args`, `env` values, `url`, and `headers`.
+
+## Server config schemas
+
+The full Zod schemas live in `src/services/mcp/types.ts`. Key shapes:
+
+```typescript
+// Stdio server
+type McpStdioServerConfig = {
+  type?: 'stdio'           // optional — default when absent
+  command: string          // executable name or path
+  args: string[]           // command arguments
+  env?: Record<string, string>
+}
+
+// SSE / HTTP / WebSocket server
+type McpSSEServerConfig = {
+  type: 'sse'
+  url: string
+  headers?: Record<string, string>
+  headersHelper?: string   // script that emits headers JSON to stdout
+  oauth?: {
+    clientId?: string
+    callbackPort?: number
+    authServerMetadataUrl?: string
+    xaa?: boolean          // cross-app access via enterprise IdP
+  }
+}
+
+type McpHTTPServerConfig = {
+  type: 'http'
+  url: string
+  headers?: Record<string, string>
+  oauth?: McpOAuthConfig
+}
+
+type McpWebSocketServerConfig = {
+  type: 'ws'
+  url: string
+  headers?: Record<string, string>
+}
+```
+
+## Server connection states
+
+Each MCP server connection is one of five states:
+
+```typescript
+// src/services/mcp/types.ts
+type MCPServerConnection =
+  | ConnectedMCPServer    // active and ready
+  | FailedMCPServer       // connection error
+  | NeedsAuthMCPServer    // OAuth flow required
+  | PendingMCPServer      // connecting / reconnecting
+  | DisabledMCPServer     // user-disabled
+```
+
+Run `/mcp` to see the current state of all configured servers.
+
+## MCP tools
+
+Each tool from a connected server is registered as a `MCPTool` instance with a namespaced name:
+
+```
+mcp__<server-name>__<tool-name>
+```
+
+For example, a `send_message` tool on the `slack` server becomes `mcp__slack__send_message`. Claude calls these tools the same way it calls built-in tools.
+
+Tool input schemas are validated against the server's declared JSON Schema. Results that exceed size limits are persisted to disk, and Claude receives a reference path instead of the raw content.
+
+## MCP resources
+
+MCP servers can expose files, database rows, or any blob of content as **resources**. Claude Code provides two built-in tools to work with them:
+
+- **`ListMcpResources`** — lists all resources available from a server
+- **`ReadMcpResource`** — reads the content of a specific resource by URI
+
+Resources have a server name, URI, optional MIME type, and optional description. The `ServerResource` type:
+
+```typescript
+// src/services/mcp/types.ts
+type ServerResource = Resource & { server: string }
+```
+
+## MCP skills (prompts)
+
+When a connected MCP server exposes **prompts**, Claude Code registers each one as a skill with `loadedFrom: 'mcp'`. These skills appear in `/skills` alongside file-based skills and can be invoked the same way.
+
+MCP skills are built using `createSkillCommand()` and `parseSkillFrontmatterFields()` from `loadSkillsDir.ts`, accessed via the `getMCPSkillBuilders()` registry in `src/skills/mcpSkillBuilders.ts`.
+
+<Warning>
+MCP skills never execute inline shell commands (`!`...``) from their body. MCP content is remote and untrusted. The `${CLAUDE_SKILL_DIR}` variable is also unavailable for MCP skills.
+</Warning>
+
+## Authentication
+
+### API key headers
+
+Pass static or environment-variable-substituted headers directly in the config:
+
+```json
+{
+  "type": "sse",
+  "url": "https://api.example.com/mcp",
+  "headers": {
+    "X-API-Key": "$MY_SERVICE_API_KEY"
+  }
+}
+```
+
+### Dynamic headers via headersHelper
+
+For tokens that expire or require runtime computation, set `headersHelper` to a command that prints a JSON object to stdout:
+
+```json
+{
+  "type": "http",
+  "url": "https://api.example.com/mcp",
+  "headersHelper": "my-auth-helper --output-json"
+}
+```
+
+### OAuth 2.0
+
+For servers that support OAuth, Claude Code handles the full authorization code flow:
+
+```json
+{
+  "type": "http",
+  "url": "https://api.example.com/mcp",
+  "oauth": {
+    "clientId": "my-client-id",
+    "callbackPort": 8765,
+    "authServerMetadataUrl": "https://auth.example.com/.well-known/oauth-authorization-server"
+  }
+}
+```
+
+When OAuth is required, the server enters `NeedsAuthMCPServer` state. An auth tool (`McpAuthTool`) becomes available so Claude can trigger the browser-based flow.
+
+### Cross-App Access (XAA)
+
+Enterprise deployments can configure Cross-App Access via an organization IdP. Set `xaa: true` in the `oauth` block — the IdP connection details are configured once in `settings.xaaIdp` and shared across all XAA-enabled servers.
+
+## Policy controls
+
+Administrators can restrict which MCP servers users can configure:
+
+```json
+{
+  "allowedMcpServers": [
+    { "serverName": "internal-tools" },
+    { "serverCommand": ["npx", "-y", "@company/mcp-server"] },
+    { "serverUrl": "https://*.company.internal/mcp" }
+  ],
+  "deniedMcpServers": [
+    { "serverUrl": "https://untrusted.example.com/*" }
+  ]
+}
+```
+
+The denylist takes absolute precedence over the allowlist. Matching supports exact names, exact command arrays, and URL patterns with `*` wildcards.
+
+Set `allowManagedMcpServersOnly: true` to make the allowlist authoritative — only servers in the managed policy file are permitted.
+
+## Plugin-provided MCP servers
+
+Plugins can ship their own MCP servers by declaring them in `plugin.json`:
+
+```json
+{
+  "name": "my-plugin",
+  "mcpServers": {
+    "plugin-tools": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/server",
+      "args": ["--mode", "production"]
+    }
+  }
+}
+```
+
+Plugin servers are namespaced as `plugin:<plugin-name>:<server-name>` internally to avoid key collisions with user-configured servers. If a plugin server has the same command or URL as an already-configured server, it is silently suppressed (deduplication by content signature, not by name).
+
+## MCP elicitation
+
+MCP servers can request structured information from the user during tool calls via the **elicitation** protocol. When a server sends an `elicitation/create` request, Claude Code surfaces a prompt to the user asking for the required data.
+
+This is handled by the `ElicitRequestSchema` from the MCP SDK. The response flows back to the server as an `ElicitResult`. Hooks can intercept elicitation events via the `Elicitation` and `ElicitationResult` hook events.
+
+## Viewing server status
+
+```
+/mcp
+```
+
+Shows all configured servers, their transport type, current connection state, and the number of tools they provide. Servers in a `failed` or `needs-auth` state are highlighted so you can take action.
+
+## Example: connecting a filesystem server
+
+<Steps>
+  <Step title="Add to .mcp.json">
+    ```json
+    {
+      "mcpServers": {
+        "fs": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+        }
+      }
+    }
+    ```
+  </Step>
+  <Step title="Approve the server">
+    On first connection, Claude Code prompts you to approve the new project-scoped server. Approved servers are stored in the local project config.
+  </Step>
+  <Step title="Use the tools">
+    Claude now has access to `mcp__fs__read_file`, `mcp__fs__write_file`, `mcp__fs__list_directory`, and other tools provided by the server.
+  </Step>
+</Steps>

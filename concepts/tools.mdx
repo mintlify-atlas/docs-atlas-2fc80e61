@@ -1,0 +1,249 @@
+---
+title: "Tools"
+description: "The model-callable tools that Claude Code exposes: file operations, shell execution, web access, agent management, MCP integration, and more."
+---
+
+Tools are the primitives Claude uses to take action. Each tool lives in `src/tools/<ToolName>/` and exposes an input schema, a description for the model, and a `call()` implementation.
+
+## Tool categories
+
+<CardGroup cols={2}>
+  <Card title="File tools" icon="file">
+    Read, write, edit, and search files and notebooks.
+  </Card>
+  <Card title="Shell tools" icon="terminal">
+    Execute shell commands with security and permission checks.
+  </Card>
+  <Card title="Web tools" icon="globe">
+    Fetch URLs and run web searches.
+  </Card>
+  <Card title="Agent tools" icon="robot">
+    Spawn sub-agents, manage tasks, and send messages between agents.
+  </Card>
+  <Card title="MCP tools" icon="plug">
+    Interact with Model Context Protocol servers and resources.
+  </Card>
+  <Card title="Utility tools" icon="wrench">
+    Search, todo management, skills, sleep, and synthetic output.
+  </Card>
+</CardGroup>
+
+## File tools
+
+| Tool | Directory |
+|---|---|
+| `FileReadTool` | `src/tools/FileReadTool/` |
+| `FileEditTool` | `src/tools/FileEditTool/` |
+| `FileWriteTool` | `src/tools/FileWriteTool/` |
+| `GlobTool` | `src/tools/GlobTool/` |
+| `NotebookEditTool` | `src/tools/NotebookEditTool/` |
+
+**FileReadTool** reads file contents with configurable line offsets and limits. It includes an image processor for binary files and limits to prevent reading excessively large files.
+
+**FileEditTool** performs targeted in-place edits using exact string matching. It validates that the `oldString` exists exactly once before applying the replacement.
+
+**FileWriteTool** writes complete file contents. It is used for creating new files or fully overwriting existing ones.
+
+**GlobTool** finds files by glob pattern, returning results sorted by modification time.
+
+**NotebookEditTool** edits Jupyter notebook cells, supporting both code and markdown cell types.
+
+## Shell tools
+
+| Tool | Directory |
+|---|---|
+| `BashTool` | `src/tools/BashTool/` |
+| `PowerShellTool` | `src/tools/PowerShellTool/` |
+
+**BashTool** is the primary shell execution tool. It has an extensive sub-module structure:
+
+```
+BashTool/
+  BashTool.tsx              Main tool definition
+  bashPermissions.ts        Permission checking for bash commands
+  bashSecurity.ts           Security validators (injection, substitution, etc.)
+  commandSemantics.ts       Semantic analysis of command intent
+  destructiveCommandWarning.ts  Detects data-loss patterns for warnings
+  modeValidation.ts         Permission mode checks (acceptEdits, bypassPermissions, etc.)
+  pathValidation.ts         Validates paths in command arguments
+  readOnlyValidation.ts     Determines if a command is read-only
+  sedEditParser.ts          Parses sed edit commands
+  sedValidation.ts          Validates sed operations
+  shouldUseSandbox.ts       Decides whether to run in the sandbox
+```
+
+## Web tools
+
+| Tool | Directory |
+|---|---|
+| `WebFetchTool` | `src/tools/WebFetchTool/` |
+| `WebSearchTool` | `src/tools/WebSearchTool/` |
+
+**WebFetchTool** fetches a URL and returns its content, optionally converted to markdown.
+
+**WebSearchTool** performs a web search and returns structured results.
+
+## Agent tools
+
+Agent tools enable multi-agent workflows — spawning sub-agents, managing tasks, and messaging between agents.
+
+| Tool | Directory |
+|---|---|
+| `AgentTool` | `src/tools/AgentTool/` |
+| `TaskCreateTool` | `src/tools/TaskCreateTool/` |
+| `TaskGetTool` | `src/tools/TaskGetTool/` |
+| `TaskListTool` | `src/tools/TaskListTool/` |
+| `TaskUpdateTool` | `src/tools/TaskUpdateTool/` |
+| `TaskOutputTool` | `src/tools/TaskOutputTool/` |
+| `TaskStopTool` | `src/tools/TaskStopTool/` |
+| `SendMessageTool` | `src/tools/SendMessageTool/` |
+
+**AgentTool** launches a sub-agent with its own context and token budget. Sub-agents run tasks in parallel and report results back to the parent agent.
+
+**Task\* tools** (`TaskCreateTool`, `TaskGetTool`, `TaskListTool`, `TaskUpdateTool`) manage the task registry used by in-process teammates. These are only available to in-process teammates, not general async agents.
+
+**TaskOutputTool** is used by sub-agents to emit their final result.
+
+**TaskStopTool** allows a sub-agent to signal that it should stop.
+
+**SendMessageTool** sends a message between agents in a multi-agent session.
+
+## MCP tools
+
+| Tool | Directory |
+|---|---|
+| `MCPTool` | `src/tools/MCPTool/` |
+| `ListMcpResourcesTool` | `src/tools/ListMcpResourcesTool/` |
+| `ReadMcpResourceTool` | `src/tools/ReadMcpResourceTool/` |
+| `McpAuthTool` | `src/tools/McpAuthTool/` |
+
+**MCPTool** is the generic proxy tool for invoking tools provided by connected MCP servers.
+
+**ListMcpResourcesTool** and **ReadMcpResourceTool** expose MCP resource access to the model.
+
+**McpAuthTool** handles OAuth authentication flows for MCP servers that require authorization.
+
+## Utility tools
+
+| Tool | Directory |
+|---|---|
+| `GrepTool` | `src/tools/GrepTool/` |
+| `TodoWriteTool` | `src/tools/TodoWriteTool/` |
+| `SkillTool` | `src/tools/SkillTool/` |
+| `ToolSearchTool` | `src/tools/ToolSearchTool/` |
+| `SleepTool` | `src/tools/SleepTool/` |
+| `SyntheticOutputTool` | `src/tools/SyntheticOutputTool/` |
+| `AskUserQuestionTool` | `src/tools/AskUserQuestionTool/` |
+| `LSPTool` | `src/tools/LSPTool/` |
+
+**GrepTool** searches file contents using regular expressions, returning matching lines with file paths and line numbers.
+
+**TodoWriteTool** manages the model's todo list — a scratchpad for tracking multi-step tasks within a session.
+
+**SkillTool** allows the model to invoke skills (prompt-type commands) by name.
+
+**ToolSearchTool** lets the model search for available tools by keyword, useful when many MCP tools are connected.
+
+**SleepTool** pauses execution for a given number of milliseconds.
+
+**SyntheticOutputTool** emits structured output for coordinator-mode agents.
+
+**AskUserQuestionTool** allows the model to ask the user a clarifying question during plan mode.
+
+**LSPTool** exposes Language Server Protocol operations (go-to-definition, hover, diagnostics) when an IDE extension is connected.
+
+## Other tools
+
+| Tool | Directory | Purpose |
+|---|---|---|
+| `ScheduleCronTool` | `src/tools/ScheduleCronTool/` | Create, delete, and list scheduled cron tasks |
+| `EnterWorktreeTool` | `src/tools/EnterWorktreeTool/` | Enter a git worktree context |
+| `ExitWorktreeTool` | `src/tools/ExitWorktreeTool/` | Exit a git worktree context |
+| `EnterPlanModeTool` | `src/tools/EnterPlanModeTool/` | Switch to plan mode (no execution) |
+| `ExitPlanModeTool` | `src/tools/ExitPlanModeTool/` | Exit plan mode and resume execution |
+| `REPLTool` | `src/tools/REPLTool/` | Interactive REPL for scripting languages |
+| `BriefTool` | `src/tools/BriefTool/` | Emit brief structured output (Kairos feature) |
+| `ConfigTool` | `src/tools/ConfigTool/` | Read and update configuration values |
+| `RemoteTriggerTool` | `src/tools/RemoteTriggerTool/` | Trigger remote events |
+| `TeamCreateTool` / `TeamDeleteTool` | `src/tools/Team*/` | Manage agent teams |
+
+## Tool availability sets
+
+`src/constants/tools.ts` defines which tools are available in each execution context. All tool name constants are imported from the individual tool modules.
+
+### ASYNC_AGENT_ALLOWED_TOOLS
+
+The tools an async (background) agent is permitted to use:
+
+```typescript
+export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
+  FILE_READ_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
+  TODO_WRITE_TOOL_NAME,
+  GREP_TOOL_NAME,
+  WEB_FETCH_TOOL_NAME,
+  GLOB_TOOL_NAME,
+  ...SHELL_TOOL_NAMES,
+  FILE_EDIT_TOOL_NAME,
+  FILE_WRITE_TOOL_NAME,
+  NOTEBOOK_EDIT_TOOL_NAME,
+  SKILL_TOOL_NAME,
+  SYNTHETIC_OUTPUT_TOOL_NAME,
+  TOOL_SEARCH_TOOL_NAME,
+  ENTER_WORKTREE_TOOL_NAME,
+  EXIT_WORKTREE_TOOL_NAME,
+])
+```
+
+### ALL_AGENT_DISALLOWED_TOOLS
+
+Tools that are **never** available to sub-agents (regardless of context):
+
+```typescript
+export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
+  TASK_OUTPUT_TOOL_NAME,
+  EXIT_PLAN_MODE_V2_TOOL_NAME,
+  ENTER_PLAN_MODE_TOOL_NAME,
+  // AgentTool blocked for non-ant users to prevent recursion
+  ...(process.env.USER_TYPE === 'ant' ? [] : [AGENT_TOOL_NAME]),
+  ASK_USER_QUESTION_TOOL_NAME,
+  TASK_STOP_TOOL_NAME,
+  // Prevent recursive workflow execution inside subagents
+  ...(feature('WORKFLOW_SCRIPTS') ? [WORKFLOW_TOOL_NAME] : []),
+])
+```
+
+<Note>
+Anthropic-internal users (`USER_TYPE === 'ant'`) are permitted to use `AgentTool` inside sub-agents, enabling nested agent hierarchies. External users have `AgentTool` blocked in sub-agents to prevent unbounded recursion.
+</Note>
+
+### IN_PROCESS_TEAMMATE_ALLOWED_TOOLS
+
+Additional tools available only to in-process teammates (not general async agents):
+
+```typescript
+export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
+  TASK_CREATE_TOOL_NAME,
+  TASK_GET_TOOL_NAME,
+  TASK_LIST_TOOL_NAME,
+  TASK_UPDATE_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+  // Cron tools gated on AGENT_TRIGGERS feature flag
+  ...(feature('AGENT_TRIGGERS')
+    ? [CRON_CREATE_TOOL_NAME, CRON_DELETE_TOOL_NAME, CRON_LIST_TOOL_NAME]
+    : []),
+])
+```
+
+### COORDINATOR_MODE_ALLOWED_TOOLS
+
+In coordinator mode, the agent can only manage other agents and produce output — it cannot use file or shell tools directly:
+
+```typescript
+export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
+  AGENT_TOOL_NAME,
+  TASK_STOP_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
+  SYNTHETIC_OUTPUT_TOOL_NAME,
+])
+```

@@ -1,0 +1,235 @@
+---
+title: "Configuration"
+description: "Commands for configuring Claude Code: model selection, themes, vim mode, permissions, privacy settings, hooks, keybindings, and CLAUDE.md memory files."
+---
+
+Claude Code exposes its settings through a set of slash commands. Changes made through these commands are written to `~/.claude/settings.json` (global settings) or `.claude/settings.json` (project settings) and take effect immediately.
+
+## /config
+
+Open the configuration panel. Provides a full settings UI in the terminal where you can view and modify all configuration values.
+
+**Alias:** `settings`
+
+```bash
+> /config
+```
+
+The config panel organizes settings into tabs — Config, Model, Theme, Permissions, and more — so you can navigate to specific areas without knowing which command to use.
+
+## /model
+
+Switch the active Claude model. Run without arguments to open a model picker. Pass a model name to switch directly.
+
+```bash
+# Open the model picker
+> /model
+
+# Switch to a specific model
+> /model claude-opus-4-5
+
+# Switch to Sonnet
+> /model claude-sonnet-4-5
+```
+
+The current model is shown in the status bar. Model availability depends on your subscription and API access.
+
+<Info>
+The model you select is saved for the current session. To set a default model, use `/config` and change the model preference there.
+</Info>
+
+## /theme
+
+Change the terminal color theme. Opens a picker showing all available themes with a live preview.
+
+```bash
+> /theme
+```
+
+Available themes include dark, light, and several high-contrast variants. The selected theme is saved to your global settings and persists across sessions.
+
+## /color
+
+Set the prompt bar color for the current session. Accepts a color name or `default` to reset.
+
+```bash
+# Set a color
+> /color blue
+> /color green
+> /color orange
+
+# Reset to default
+> /color default
+```
+
+This is a session-only change — it does not persist after you exit. Use it to visually distinguish between different Claude Code sessions.
+
+## /vim
+
+Toggle between Vim and Normal (readline) editing modes for the input prompt.
+
+```bash
+> /vim
+```
+
+When vim mode is active:
+- Press `Escape` to enter NORMAL mode
+- Use `i`, `a`, `o` to enter INSERT mode
+- Standard vim navigation keys (`h`, `j`, `k`, `l`, `w`, `b`, `0`, `$`) work in NORMAL mode
+
+The mode is saved to your global configuration and persists across sessions. Run `/vim` again to toggle back to Normal mode.
+
+## /permissions
+
+Manage tool permission rules. Opens a panel where you can add allow and deny rules that control which tools Claude can use and on which files or directories.
+
+**Alias:** `allowed-tools`
+
+```bash
+> /permissions
+```
+
+Permission rules are stored in your settings file and evaluated in order. A `deny` rule takes precedence over an `allow` rule for the same tool.
+
+Example rules:
+- Allow `Bash` to run any command
+- Deny `Write` on paths outside the current project
+- Allow `Read` on a specific directory
+
+<Tip>
+Use `/permissions` to restrict Claude from modifying certain directories during sensitive operations, or to grant broad access when you trust the task fully.
+</Tip>
+
+## /privacy-settings
+
+View and update your privacy and telemetry settings. Available to claude.ai subscribers.
+
+```bash
+> /privacy-settings
+```
+
+Privacy settings control what data Claude Code sends to Anthropic, including usage telemetry and conversation metadata.
+
+## /hooks
+
+View and configure lifecycle hooks. Hooks are shell commands or scripts that Claude Code runs at defined points in its lifecycle.
+
+```bash
+> /hooks
+```
+
+Available hook types:
+
+| Hook | When it runs |
+|------|-------------|
+| `pre_tool_use` | Before any tool is called |
+| `post_tool_use` | After a tool completes |
+| `pre_compact` | Before `/compact` summarizes the conversation |
+| `notification` | When Claude sends a notification |
+| `stop` | When Claude finishes a response |
+
+Hooks receive context about the event as JSON on stdin and can modify behavior by writing to stdout. See the [hooks documentation](/extensibility/hooks) for the full schema.
+
+## /keybindings
+
+Open or create your keybindings configuration file in your `$EDITOR`. If the file does not exist, a template is created with commented-out examples of every available binding.
+
+```bash
+> /keybindings
+```
+
+Keybindings are stored at `~/.claude/keybindings.json`. The format is:
+
+```json
+{
+  "app:submit": "enter",
+  "app:newline": "ctrl+j",
+  "app:toggleTranscript": "ctrl+o"
+}
+```
+
+<Note>
+`/keybindings` is only available when keybinding customization is enabled. This feature is currently in preview.
+</Note>
+
+## /memory
+
+Open the memory file editor. Lets you select and edit CLAUDE.md memory files — project-level and user-level — in your `$EDITOR`.
+
+```bash
+> /memory
+```
+
+After selecting a file, Claude Code opens it in `$VISUAL` (or `$EDITOR` if `$VISUAL` is not set). If the file does not exist, it is created automatically.
+
+### CLAUDE.md memory files
+
+CLAUDE.md files are plain Markdown files that Claude reads at the start of every session. Use them to give Claude persistent context about your project, team conventions, or personal preferences.
+
+**File locations and load order:**
+
+Memory files are loaded in this order (later files take higher priority):
+
+1. **Managed memory** — `/etc/claude-code/CLAUDE.md` — system-wide instructions for all users on a machine
+2. **User memory** — `~/.claude/CLAUDE.md` — your personal instructions for all projects
+3. **Project memory** — `CLAUDE.md`, `.claude/CLAUDE.md`, and `.claude/rules/*.md` in your project — instructions checked into the repo
+4. **Local memory** — `CLAUDE.local.md` in your project — private project-specific instructions (add to `.gitignore`)
+
+Claude discovers project and local memory files by walking up from the current working directory to the filesystem root. Files in directories closer to your current directory are loaded later and have higher priority.
+
+**Format:**
+
+CLAUDE.md files are standard Markdown. Claude reads the entire file as context:
+
+```markdown
+# Project conventions
+
+- Use TypeScript strict mode
+- Prefer `const` over `let`
+- All functions must have JSDoc comments
+- Run `npm test` before committing
+
+## File structure
+
+- `src/` — application code
+- `tests/` — test files, mirrors `src/` structure
+- `scripts/` — build and utility scripts
+
+## Current focus
+
+We are migrating from REST to GraphQL. Prefer GraphQL resolvers for new endpoints.
+```
+
+**The `@include` directive:**
+
+Memory files can include other files using the `@` syntax:
+
+```markdown
+# My project memory
+
+@./shared-conventions.md
+@~/global-preferences.md
+@/team/standards.md
+
+## Project-specific notes
+
+...
+```
+
+Supported path formats:
+- `@path` — relative path (same as `@./path`)
+- `@./relative/path` — relative to the including file
+- `@~/home/path` — relative to your home directory
+- `@/absolute/path` — absolute path
+
+Circular includes are detected and prevented. Non-existent files are silently ignored.
+
+<Tip>
+For team projects, commit `CLAUDE.md` to your repo with shared conventions. Add `CLAUDE.local.md` to `.gitignore` for personal notes that apply only to your local checkout.
+</Tip>
+
+### When Claude updates memory
+
+When Claude notices something important that should be remembered — such as a new project convention you mention or a preference you express — it may offer to update a CLAUDE.md file. You control which file it writes to.
+
+Run `/memory` at any time to review and edit the contents manually.

@@ -1,0 +1,411 @@
+---
+title: "Agent Tools"
+description: "Source reference for agent coordination tools: Agent, TaskCreate/List/Output, SendMessage, TodoWrite, CronCreate/Delete/List, and SyntheticOutput."
+---
+
+Agent tools coordinate multi-agent workflows. They spawn sub-agents, manage background tasks, enable inter-agent communication, track work items, and schedule recurring operations.
+
+---
+
+## Agent (`AgentTool`)
+
+**Source**: `src/tools/AgentTool/`
+
+Spawns a sub-agent (subprocess) to handle complex, multi-step tasks autonomously. The agent inherits the full tool pool, limited by the agent definition's allowlist/denylist.
+
+### Tool names
+
+```typescript
+export const AGENT_TOOL_NAME = 'Agent'
+// Legacy wire name kept for backward compat (permission rules, hooks, resumed sessions)
+export const LEGACY_AGENT_TOOL_NAME = 'Task'
+```
+
+### Input schema (from `AgentTool.tsx`)
+
+```typescript
+const baseInputSchema = z.object({
+  description: z.string().describe('A short (3-5 word) description of the task'),
+  prompt: z.string().describe('The task for the agent to perform'),
+  subagent_type: z.string().optional().describe(
+    'The type of specialized agent to use for this task'
+  ),
+  model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe(
+    "Optional model override. Takes precedence over the agent definition's model frontmatter."
+  ),
+  run_in_background: z.boolean().optional().describe(
+    'Set to true to run this agent in the background.'
+  ),
+})
+
+// Full schema adds multi-agent params
+const fullInputSchema = baseInputSchema.merge(z.object({
+  name: z.string().optional().describe(
+    'Name for the spawned agent. Makes it addressable via SendMessage({to: name}).'
+  ),
+  team_name: z.string().optional().describe(
+    'Team name for spawning. Uses current team context if omitted.'
+  ),
+  mode: permissionModeSchema().optional().describe(
+    'Permission mode for spawned teammate.'
+  ),
+  isolation: z.enum(['worktree']).optional().describe(
+    'Isolation mode. "worktree" creates a temporary git worktree so the agent works on an isolated copy of the repo.'
+  ),
+  cwd: z.string().optional().describe(
+    'Absolute path to run the agent in. Mutually exclusive with isolation: "worktree".'
+  ),
+}))
+```
+
+### Built-in agent types
+
+Defined in `built-in/` and `constants.ts`:
+
+```typescript
+// One-shot built-in agents — skip the agentId/SendMessage/usage trailer (~135 chars)
+export const ONE_SHOT_BUILTIN_AGENT_TYPES: ReadonlySet<string> = new Set([
+  'Explore',
+  'Plan',
+])
+```
+
+### Auto-backgrounding
+
+```typescript
+const PROGRESS_THRESHOLD_MS = 2000  // Show background hint after 2 seconds
+
+// Auto-background agent tasks after this many ms (0 = disabled)
+function getAutoBackgroundMs(): number {
+  if (isEnvTruthy(process.env.CLAUDE_AUTO_BACKGROUND_TASKS) ||
+      getFeatureValue_CACHED_MAY_BE_STALE('tengu_auto_background_agents', false)) {
+    return 120_000
+  }
+  return 0
+}
+```
+
+### Fork subagent
+
+When `isForkSubagentEnabled()` is true (gated via `feature('FORK_SUBAGENT')`), omitting `subagent_type` forks the current agent instead of spawning a fresh one. A fork inherits the parent's full conversation context and prompt cache — cheap to create because the cache is shared.
+
+### Isolation modes
+
+| Mode | Behavior |
+|---|---|
+| *(none)* | Agent runs in the current working directory |
+| `worktree` | Creates a temporary git worktree; automatically cleaned up if the agent makes no changes |
+| `remote` (Anthropic-internal) | Launches the agent in a remote CCR environment; always runs in background |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `AgentTool.tsx` | Tool definition, schema, lifecycle orchestration |
+| `agentToolUtils.ts` | Progress tracking, handoff classification, partial result extraction |
+| `agentColorManager.ts` | Assigns display colors to concurrent agents |
+| `agentDisplay.ts` | Agent display name formatting |
+| `agentMemory.ts` / `agentMemorySnapshot.ts` | Per-agent memory context management |
+| `builtInAgents.ts` | Built-in agent type registry |
+| `built-in/` | Individual built-in agent definitions (Explore, Plan, etc.) |
+| `constants.ts` | Tool names, one-shot types |
+| `forkSubagent.ts` | Fork semantics, fork detection, fork message building |
+| `loadAgentsDir.ts` | Loads agent definitions from `.claude/agents/` |
+| `prompt.ts` | Dynamic tool description builder, agent list formatting |
+| `resumeAgent.ts` | Resumes a previously backgrounded agent from disk state |
+| `runAgent.ts` | Core agent execution loop |
+| `UI.tsx` | Agent progress, result, and error display |
+
+---
+
+## TaskCreate
+
+**Source**: `src/tools/TaskCreateTool/`
+
+Creates a new task in the coordinator's structured task list. Used in coordinator mode and multi-agent workflows.
+
+### Tool name
+
+```typescript
+export const TASK_CREATE_TOOL_NAME = 'TaskCreate'
+```
+
+### Description
+
+```
+Create a new task in the task list
+```
+
+### Task fields (from `prompt.ts`)
+
+| Field | Type | Description |
+|---|---|---|
+| `subject` | `string` | Brief, actionable title in imperative form |
+| `description` | `string` | What needs to be done |
+| `activeForm` | `string` (optional) | Present continuous form shown in spinner during execution |
+
+All tasks are created with status `pending`. Use `TaskUpdate` to assign owners or set dependencies.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `TaskCreateTool.ts` | Tool definition and task registry write |
+| `constants.ts` | Tool name |
+| `prompt.ts` | Description and usage prompt |
+
+---
+
+## TaskList
+
+**Source**: `src/tools/TaskListTool/`
+
+Lists all tasks in the current coordinator session.
+
+### Tool name
+
+```typescript
+export const TASK_LIST_TOOL_NAME = 'TaskList'
+```
+
+Returns all tasks with their `id`, `subject`, `status`, `owner`, `blocks`, and `blockedBy` fields. Used by agents to check for work assignments and track overall progress.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `TaskListTool.ts` | Tool definition and task registry read |
+| `constants.ts` | Tool name |
+| `prompt.ts` | Description and usage |
+
+---
+
+## TaskOutput
+
+**Source**: `src/tools/TaskOutputTool/`
+
+Retrieves the output of a specific background task by its ID.
+
+### Tool name
+
+```typescript
+export const TASK_OUTPUT_TOOL_NAME = 'TaskOutput'
+```
+
+Returns the task's stdout/stderr output written to disk via `getTaskOutputPath()`. Used by the coordinator to inspect what a background agent produced without needing the agent to still be running.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `TaskOutputTool.tsx` | Tool definition and disk read |
+| `constants.ts` | Tool name |
+
+---
+
+## SendMessage
+
+**Source**: `src/tools/SendMessageTool/`
+
+Sends a message from the current agent to another named agent or broadcasts to all teammates.
+
+### Tool name
+
+```typescript
+export const SEND_MESSAGE_TOOL_NAME = 'SendMessage'
+```
+
+### Description
+
+```
+Send a message to another agent
+```
+
+### Prompt (from `prompt.ts`)
+
+```
+| `to` | |
+|---|---|
+| `"researcher"` | Teammate by name |
+| `"*"` | Broadcast to all teammates — expensive (linear in team size), use only when everyone genuinely needs it |
+
+Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool.
+Messages from teammates are delivered automatically; you don't check an inbox.
+Refer to teammates by name, never by UUID.
+```
+
+### Protocol responses
+
+SendMessage handles structured JSON protocol messages:
+
+```json
+// Shutdown response
+{"to": "team-lead", "message": {"type": "shutdown_response", "request_id": "...", "approve": true}}
+
+// Plan approval response
+{"to": "researcher", "message": {"type": "plan_approval_response", "request_id": "...", "approve": false, "feedback": "add error handling"}}
+```
+
+### Cross-session messaging (UDS_INBOX feature)
+
+When `feature('UDS_INBOX')` is enabled, `to` also accepts:
+- `"uds:/path/to.sock"` — local Claude session via Unix domain socket
+- `"bridge:session_01AbCd..."` — Remote Control peer session
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `SendMessageTool.ts` | Tool definition, message routing, teammate lookup |
+| `constants.ts` | Tool name |
+| `prompt.ts` | Dynamic description (includes UDS targets when feature is on) |
+| `UI.tsx` | Sent message display |
+
+---
+
+## TodoWrite
+
+**Source**: `src/tools/TodoWriteTool/`
+
+Manages a structured, session-scoped todo list. Designed for proactive task tracking across complex multi-step operations.
+
+### Tool name
+
+```typescript
+export const TODO_WRITE_TOOL_NAME = 'TodoWrite'
+```
+
+### Description
+
+```
+Update the todo list for the current session. To be used proactively and often to track progress and pending tasks. Make sure that at least one task is in_progress at all times. Always provide both content (imperative) and activeForm (present continuous) for each task.
+```
+
+### Task states and rules (from `prompt.ts`)
+
+| State | Meaning |
+|---|---|
+| `pending` | Not yet started |
+| `in_progress` | Currently active — exactly ONE task must be in_progress at a time |
+| `completed` | Finished successfully |
+
+Task fields:
+- **`content`**: Imperative form — what needs to be done (e.g., `"Run tests"`)
+- **`activeForm`**: Present continuous form — shown during execution (e.g., `"Running tests"`)
+
+### When to use
+
+Use TodoWrite proactively when:
+1. A task requires 3 or more distinct steps
+2. The user provides multiple tasks (numbered or comma-separated)
+3. After receiving new instructions — capture requirements immediately
+4. Starting a task — mark it `in_progress` **before** beginning work
+5. Completing a task — mark it `completed` immediately; don't batch
+
+Skip TodoWrite for single trivial tasks, purely conversational requests, or tasks completable in fewer than 3 trivial steps.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `TodoWriteTool.ts` | Tool definition, todo list state management |
+| `constants.ts` | Tool name |
+| `prompt.ts` | Full usage guidelines with examples |
+
+---
+
+## CronCreate / CronDelete / CronList
+
+**Source**: `src/tools/ScheduleCronTool/`
+
+Schedule, cancel, and list recurring or one-shot cron jobs.
+
+### Tool names
+
+```typescript
+export const CRON_CREATE_TOOL_NAME = 'CronCreate'
+export const CRON_DELETE_TOOL_NAME = 'CronDelete'
+export const CRON_LIST_TOOL_NAME = 'CronList'
+```
+
+### Availability
+
+Cron tools are gated by two conditions:
+
+```typescript
+export function isKairosCronEnabled(): boolean {
+  return feature('AGENT_TRIGGERS')
+    ? !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
+        getFeatureValue_CACHED_WITH_REFRESH('tengu_kairos_cron', true, KAIROS_CRON_REFRESH_MS)
+    : false
+}
+```
+
+Set `CLAUDE_CODE_DISABLE_CRON=1` to disable cron scheduling entirely. The GrowthBook gate `tengu_kairos_cron` acts as a fleet-wide kill switch.
+
+### CronCreate
+
+Creates a scheduled job using standard 5-field cron syntax in the user's local timezone.
+
+```typescript
+export function buildCronCreateDescription(durableEnabled: boolean): string {
+  return durableEnabled
+    ? 'Schedule a prompt to run at a future time — either recurring on a cron schedule, or once at a specific time. Pass durable: true to persist to .claude/scheduled_tasks.json; otherwise session-only.'
+    : 'Schedule a prompt to run at a future time within this Claude session — either recurring on a cron schedule, or once at a specific time.'
+}
+```
+
+### Cron parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `cron` | `string` | 5-field cron expression in local timezone (`"0 9 * * *"` = 9am daily) |
+| `prompt` | `string` | The prompt to enqueue when the job fires |
+| `recurring` | `boolean` | `true` for recurring (default), `false` for one-shot (auto-deleted after firing) |
+| `durable` | `boolean` | `true` to persist to `.claude/scheduled_tasks.json` (survives restarts) |
+
+### Scheduling guidance (from `prompt.ts`)
+
+```
+## Avoid the :00 and :30 minute marks when the task allows it
+
+Every user who asks for "9am" gets `0 9`, and every user who asks for "hourly" gets `0 *` —
+which means requests from across the planet land on the API at the same instant.
+When the user's request is approximate, pick a minute that is NOT 0 or 30:
+  "every morning around 9" → "57 8 * * *" or "3 9 * * *" (not "0 9 * * *")
+  "hourly" → "7 * * * *" (not "0 * * * *")
+```
+
+### Jitter and expiration
+
+The scheduler adds deterministic jitter:
+- **Recurring tasks**: fire up to 10% of their period late (max 15 minutes)
+- **One-shot tasks** landing on `:00` or `:30`: fire up to 90 seconds early
+
+Recurring tasks auto-expire after `DEFAULT_MAX_AGE_DAYS` days (currently derived from `DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs`). They fire once more, then are deleted.
+
+### CronDelete
+
+```
+Cancel a scheduled cron job by ID
+```
+
+Pass the job ID returned by `CronCreate`. Removes the job from the in-memory session store (session-only) or `.claude/scheduled_tasks.json` (durable).
+
+### CronList
+
+```
+List scheduled cron jobs
+```
+
+Returns all active jobs with their ID, cron expression, prompt, `recurring` flag, `durable` flag, and next scheduled fire time.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `CronCreateTool.ts` | Job creation, cron expression validation, disk write for durable jobs |
+| `CronDeleteTool.ts` | Job cancellation by ID |
+| `CronListTool.ts` | Job listing with next-fire-time calculation |
+| `prompt.ts` | Tool names, descriptions, gate functions (`isKairosCronEnabled`, `isDurableCronEnabled`) |
+| `UI.tsx` | Scheduled job display in the UI |

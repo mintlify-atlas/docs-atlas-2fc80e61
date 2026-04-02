@@ -1,0 +1,218 @@
+---
+title: "Entrypoints"
+description: "Source reference for src/entrypoints/ — the bootstrap layer that resolves fast paths, feature flags, and sub-process modes before loading the full CLI."
+---
+
+The `src/entrypoints/` directory contains the top-level modules that Node/Bun executes directly. Each entrypoint is designed to minimize module evaluation time by keeping all full-CLI imports dynamic and behind explicit fast-path checks.
+
+## Files
+
+<CardGroup cols={2}>
+  <Card title="cli.tsx" icon="terminal">
+    Main CLI bootstrap. Handles all special flags before delegating to `main.js`.
+  </Card>
+  <Card title="mcp.ts" icon="server">
+    Standalone MCP (Model Context Protocol) server. Exposes Claude Code's tool suite over stdio.
+  </Card>
+  <Card title="init.ts" icon="gear">
+    Shared initialization logic — configs, telemetry, graceful shutdown, LSP, policy limits.
+  </Card>
+  <Card title="agentSdkTypes.ts" icon="code">
+    TypeScript type re-exports consumed by external SDK callers.
+  </Card>
+  <Card title="sandboxTypes.ts" icon="shield">
+    TypeScript type re-exports for sandbox integration consumers.
+  </Card>
+</CardGroup>
+
+---
+
+## cli.tsx — Main entrypoint
+
+`cli.tsx` is the binary entrypoint compiled into the `claude` executable. It runs a linear sequence of fast-path checks before ever importing the full CLI bundle.
+
+### Top-level side effects
+
+Two side effects execute before `main()`:
+
+```typescript
+// Corepack auto-pinning fix — prevents yarnpkg from being added to package.json
+process.env.COREPACK_ENABLE_AUTO_PIN = '0'
+
+// Remote (CCR) heap increase — containers have 16 GB available
+if (process.env.CLAUDE_CODE_REMOTE === 'true') {
+  const existing = process.env.NODE_OPTIONS || ''
+  process.env.NODE_OPTIONS = existing
+    ? `${existing} --max-old-space-size=8192`
+    : '--max-old-space-size=8192'
+}
+```
+
+<Note>
+`CLAUDE_CODE_REMOTE=true` is set automatically in Claude Code Remote (CCR) container environments. Setting it manually on your local machine will increase the V8 heap limit to 8 GB.
+</Note>
+
+### ABLATION_BASELINE feature flag
+
+The harness-science ablation baseline is applied at the very top of `cli.tsx`, before `init()` runs, because `BashTool`, `AgentTool`, and `PowerShellTool` capture several env-var flags into module-level constants at import time:
+
+```typescript
+if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
+  for (const k of [
+    'CLAUDE_CODE_SIMPLE',
+    'CLAUDE_CODE_DISABLE_THINKING',
+    'DISABLE_INTERLEAVED_THINKING',
+    'DISABLE_COMPACT',
+    'DISABLE_AUTO_COMPACT',
+    'CLAUDE_CODE_DISABLE_AUTO_MEMORY',
+    'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',
+  ]) {
+    process.env[k] ??= '1'
+  }
+}
+```
+
+The `feature('ABLATION_BASELINE')` call is a build-time Bun `feature()` gate — dead code elimination removes this entire block from external/OSS builds.
+
+### Fast paths
+
+`cli.tsx` dispatches to specialized handlers before loading `main.js`. Each fast path calls `profileCheckpoint()` so startup profiling captures where time is spent.
+
+<AccordionGroup>
+  <Accordion title="--version / -v / -V">
+    Zero module loading. Inlines `MACRO.VERSION` (substituted at build time) and exits immediately.
+
+    ```typescript
+    if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
+      console.log(`${MACRO.VERSION} (Claude Code)`)
+      return
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="--dump-system-prompt (Anthropic-internal)">
+    Renders and prints the full system prompt to stdout. Used by prompt sensitivity evals. Gated behind `feature('DUMP_SYSTEM_PROMPT')` — not present in external builds.
+  </Accordion>
+
+  <Accordion title="--claude-in-chrome-mcp">
+    Starts the Claude-in-Chrome MCP server via `utils/claudeInChrome/mcpServer.js`.
+  </Accordion>
+
+  <Accordion title="--chrome-native-host">
+    Launches the Chrome native messaging host via `utils/claudeInChrome/chromeNativeHost.js`.
+  </Accordion>
+
+  <Accordion title="--daemon-worker=&lt;kind&gt; (DAEMON gate)">
+    Spawned by the daemon supervisor for each worker process. Intentionally lean — no `enableConfigs()`, no analytics sinks at this layer.
+  </Accordion>
+
+  <Accordion title="remote-control / rc / remote / sync / bridge (BRIDGE_MODE gate)">
+    Serves the local machine as a bridge environment for Remote Control. Performs auth check before GrowthBook gate evaluation (auth is required for GrowthBook to have user context). Also checks the `allow_remote_control` policy limit.
+  </Accordion>
+
+  <Accordion title="daemon (DAEMON gate)">
+    Long-running supervisor process. Calls `enableConfigs()` and `initSinks()` before delegating to `daemon/main.js`.
+  </Accordion>
+
+  <Accordion title="ps / logs / attach / kill / --bg / --background (BG_SESSIONS gate)">
+    Session management against the `~/.claude/sessions/` registry.
+  </Accordion>
+
+  <Accordion title="new / list / reply (TEMPLATES gate)">
+    Template job commands. Calls `process.exit(0)` (not `return`) because Ink's TUI can leave event loop handles that prevent natural exit.
+  </Accordion>
+
+  <Accordion title="environment-runner (BYOC_ENVIRONMENT_RUNNER gate)">
+    Headless Bring-Your-Own-Container runner.
+  </Accordion>
+
+  <Accordion title="self-hosted-runner (SELF_HOSTED_RUNNER gate)">
+    Headless self-hosted runner targeting `SelfHostedRunnerWorkerService` API.
+  </Accordion>
+
+  <Accordion title="--worktree --tmux fast path">
+    When both `--tmux` (or `--tmux=classic`) and `-w` / `--worktree` are present, execs into a tmux worktree session before loading the full CLI.
+  </Accordion>
+</AccordionGroup>
+
+### Startup profiling
+
+Every fast path wraps its entry in a `profileCheckpoint()` call. After the startup profiler is loaded (itself deferred past the `--version` fast path), checkpoints accumulate timing data:
+
+```typescript
+const { profileCheckpoint } = await import('../utils/startupProfiler.js')
+profileCheckpoint('cli_entry')
+// ...
+profileCheckpoint('cli_before_main_import')
+const { main: cliMain } = await import('../main.js')
+profileCheckpoint('cli_after_main_import')
+await cliMain()
+profileCheckpoint('cli_after_main_complete')
+```
+
+---
+
+## mcp.ts — Standalone MCP server
+
+`mcp.ts` exposes Claude Code's full tool suite as a standalone MCP server. Other MCP hosts (such as Claude Desktop) can connect via stdio.
+
+```typescript
+export async function startMCPServer(
+  cwd: string,
+  debug: boolean,
+  verbose: boolean,
+): Promise<void>
+```
+
+### Key implementation details
+
+- Uses `@modelcontextprotocol/sdk` `Server` with `StdioServerTransport`
+- Server name is `claude/tengu`, version is `MACRO.VERSION`
+- File state cache is size-limited (100 files, 25 MB) via `createFileStateCacheWithSizeLimit` to prevent unbounded memory growth during long MCP sessions
+- `outputSchema` fields are only forwarded to the MCP SDK when the converted Zod schema has `type: "object"` at root — schemas with `anyOf`/`oneOf` at root (from `z.union`, `z.discriminatedUnion`, etc.) are skipped
+- The `review` command is re-exposed as an MCP command in addition to all tools
+
+---
+
+## init.ts — Shared initialization
+
+`init.ts` exports a memoized `init()` function that runs once per process. It is called by `main.js` (and by bridge/daemon paths that need the full stack).
+
+```typescript
+export const init = memoize(async (): Promise<void> => { ... })
+```
+
+### Initialization sequence
+
+<Steps>
+  <Step title="Enable configs">
+    Calls `enableConfigs()` to parse and validate `settings.json` / `CLAUDE.md` / project configs. Also calls `recordFirstStartTime()`.
+  </Step>
+  <Step title="Apply safe environment variables">
+    Calls `applySafeConfigEnvironmentVariables()` — only environment variables safe to apply before trust is established.
+  </Step>
+  <Step title="Apply CA certificates">
+    Calls `applyExtraCACertsFromConfig()` to set `NODE_EXTRA_CA_CERTS` before any TLS connections. Bun caches the TLS cert store at boot via BoringSSL, so this must happen before the first TLS handshake.
+  </Step>
+  <Step title="Policy limits and remote managed settings">
+    Initializes `policyLimits` and `remoteManagedSettings` loading promises in parallel.
+  </Step>
+  <Step title="Telemetry and OpenTelemetry">
+    OpenTelemetry modules (`~400 KB`) and gRPC exporters (`~700 KB`) are loaded lazily via dynamic `import()` inside `setMeterState()` to keep startup fast.
+  </Step>
+  <Step title="Graceful shutdown">
+    Registers `setupGracefulShutdown()` to flush analytics sinks and shut down the LSP server manager on exit.
+  </Step>
+  <Step title="JetBrains detection and LSP">
+    Calls `initJetBrainsDetection()` and pre-connects to the Anthropic API via `preconnectAnthropicApi()`.
+  </Step>
+</Steps>
+
+---
+
+## agentSdkTypes.ts and sandboxTypes.ts
+
+These files contain only TypeScript `type` and `interface` re-exports — they carry no runtime code. They exist so external SDK consumers can import Claude Code's internal type contracts without depending on the full bundle.
+
+- **`agentSdkTypes.ts`**: Types related to agent invocation, agent definitions, and tool permission contexts.
+- **`sandboxTypes.ts`**: Types for the sandbox integration layer (used by container/CCR environments).

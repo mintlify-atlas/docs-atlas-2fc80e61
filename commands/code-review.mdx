@@ -1,0 +1,169 @@
+---
+title: "Code review"
+description: "Commands for reviewing code, planning changes, and inspecting diffs: /review, /security-review, /ultrareview, /plan, /diff, /branch, and /pr-comments."
+---
+
+Claude Code provides several commands for reviewing and reasoning about code changes. `/review` and `/security-review` trigger model-driven analysis of pull requests. `/plan` puts Claude into a planning mode where it describes what it intends to do before acting. `/diff` and `/branch` help you inspect and fork the state of your work.
+
+## /review
+
+Run an AI code review on a pull request. With no arguments, `/review` lists open PRs and asks which one to review. Pass a PR number to review that PR directly.
+
+```bash
+# List open PRs and pick one
+> /review
+
+# Review a specific PR
+> /review 42
+```
+
+The review covers:
+- What the PR changes and why
+- Code quality and style
+- Specific suggestions for improvement
+- Potential issues or risks
+- Test coverage and security considerations
+
+Internally, `/review` runs `gh pr view` and `gh pr diff` to fetch the PR details, then passes the diff to Claude for analysis.
+
+<Info>
+`/review` requires the [GitHub CLI (`gh`)](https://cli.github.com/) to be installed and authenticated. Run `gh auth status` to check.
+</Info>
+
+## /security-review
+
+Run a security-focused code review of your current changes. Like `/review`, this is a prompt-type command — it sends a structured security analysis prompt to Claude, which then uses available tools to examine the code.
+
+```bash
+> /security-review
+```
+
+Security review focuses on:
+- Authentication and authorization flaws
+- Input validation and injection vulnerabilities
+- Secrets or credentials accidentally committed
+- Insecure dependencies or API usage
+- Data exposure risks
+
+## /ultrareview
+
+Run a deep, cloud-based bug-finding review on your branch or a specific PR. Unlike `/review`, `/ultrareview` runs in Claude Code on the web and takes 10–20 minutes. It spins up a fleet of agents that look for real, verifiable bugs.
+
+```bash
+# Review your current branch against main
+> /ultrareview
+
+# Review a specific PR
+> /ultrareview 42
+```
+
+**How it works:**
+
+<Steps>
+  <Step title="Eligibility check">
+    Claude Code verifies that your repo is accessible and that you have a GitHub remote. For branch-mode reviews, it computes the merge-base against `main` (or your default branch) so agents know what changed.
+  </Step>
+  <Step title="Remote session launched">
+    A cloud session starts, clones your repo, and begins the review. You see a session URL so you can track progress in the browser.
+  </Step>
+  <Step title="Findings arrive via task notification">
+    When the review finishes, results appear in your local session as a task notification. You do not need to keep the terminal open while it runs.
+  </Step>
+</Steps>
+
+<Note>
+`/ultrareview` is only available to users with it enabled on their account. The command does not appear in the picker if it is not available to you.
+</Note>
+
+**Quota and billing:** Claude.ai Pro and Max subscribers get a fixed number of free ultrareviews per billing period. Once that quota is exhausted, you are prompted to confirm Extra Usage billing before the review starts. Team and Enterprise subscribers have unlimited ultrareviews included.
+
+## /plan
+
+Toggle plan mode. When plan mode is enabled, Claude presents a step-by-step plan describing what it intends to do before it executes any tools or makes any changes. You can review and approve the plan, or ask Claude to revise it.
+
+```bash
+# Toggle plan mode on or off
+> /plan
+
+# Open the plan view directly
+> /plan open
+
+# Start a plan with a description
+> /plan refactor the database layer to use connection pooling
+```
+
+**Plan mode flow:**
+
+<Steps>
+  <Step title="Enable plan mode">
+    Run `/plan` to turn plan mode on. An indicator appears in the status bar.
+  </Step>
+  <Step title="Describe your task">
+    Type your request as normal. Instead of immediately executing, Claude writes out a numbered plan.
+  </Step>
+  <Step title="Review and approve">
+    Read the plan. Reply with approval ("looks good", "proceed") or ask for changes ("skip step 3", "also update the tests").
+  </Step>
+  <Step title="Claude executes">
+    After approval, Claude carries out the plan step by step.
+  </Step>
+</Steps>
+
+<Tip>
+Plan mode is especially useful for large refactors or tasks that touch many files. Reviewing the plan before execution is much faster than undoing a mistake after the fact.
+</Tip>
+
+## /diff
+
+View uncommitted changes and per-turn diffs. Opens an interactive diff panel that shows:
+- All uncommitted changes in the working tree
+- File-by-file diffs for each turn of the current session
+
+```bash
+> /diff
+```
+
+Use `/diff` to review what Claude has changed before committing, or to audit a long session turn by turn.
+
+## /branch
+
+Create a branch of the current conversation at this point. Claude Code forks the conversation history so you can explore a different direction without losing where you are.
+
+```bash
+# Branch with an auto-generated name
+> /branch
+
+# Branch with a specific name
+> /branch try-different-approach
+```
+
+Conversation branches are independent: changes in one branch do not affect others. You can switch between branches using `/resume`.
+
+## /pr-comments
+
+Fetch and display comments from a GitHub pull request. Retrieves both PR-level comments and inline code review comments, formatted with diff hunks for context.
+
+```bash
+# Fetch comments for the current PR
+> /pr-comments
+
+# Fetch comments for a specific PR
+> /pr-comments 42
+```
+
+Comments are formatted as:
+
+```
+## Comments
+
+@reviewer src/auth/login.ts#42:
+  ```diff
+  - const token = req.query.token
+  + const token = req.body.token
+  ```
+  > You should read this from the request body, not query params.
+```
+
+<Info>
+`/pr-comments` requires the GitHub CLI (`gh`) to be installed and authenticated.
+</Info>

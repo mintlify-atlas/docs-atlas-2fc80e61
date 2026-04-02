@@ -1,0 +1,213 @@
+---
+title: "Architecture"
+description: "How Claude Code is structured: from the CLI entrypoint through the React/Ink terminal UI, command system, tools, and supporting services."
+---
+
+Claude Code follows a layered architecture: a thin entrypoint dispatches to either fast-path handlers or the full REPL, which drives a React/Ink terminal UI, backed by a command system, a tool system, and a set of cross-cutting services.
+
+## Entrypoint and fast paths
+
+`src/entrypoints/cli.tsx` is the bootstrap entry point. Its first responsibility is to handle special flags before loading anything else. All imports inside `main()` are dynamic so that uncommon paths incur zero module-evaluation cost.
+
+```typescript
+// Fast-path for --version/-v: zero module loading needed
+if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
+  console.log(`${MACRO.VERSION} (Claude Code)`);
+  return;
+}
+```
+
+After the version check, the entrypoint recognises several other fast paths before falling through to the full CLI:
+
+| Flag / subcommand | Handled by |
+|---|---|
+| `--dump-system-prompt` | Renders the system prompt and exits (ant-only, DCE'd from external builds) |
+| `--claude-in-chrome-mcp` | Starts the Chrome MCP server |
+| `--chrome-native-host` | Starts the Chrome native messaging host |
+| `--computer-use-mcp` | Starts the computer-use MCP server (feature-gated) |
+| `--daemon-worker=<kind>` | Spawns a daemon worker process |
+| `remote-control` / `rc` / `bridge` | Starts bridge mode for remote control |
+| `daemon` | Starts the long-running daemon supervisor |
+| `ps` / `logs` / `attach` / `kill` / `--bg` | Background session management |
+| `new` / `list` / `reply` | Template job commands |
+| `environment-runner` | Headless BYOC runner |
+| `self-hosted-runner` | Self-hosted runner for SelfHostedRunnerWorkerService |
+| `--worktree --tmux` | Exec into a tmux worktree before loading the full UI |
+
+When no special flag is detected, the entrypoint captures early keyboard input (so nothing typed before the UI renders is lost) and then loads `src/main.js`:
+
+```typescript
+const { startCapturingEarlyInput } = await import('../utils/earlyInput.js');
+startCapturingEarlyInput();
+const { main: cliMain } = await import('../main.js');
+await cliMain();
+```
+
+## Three architectural layers
+
+<CardGroup cols={3}>
+  <Card title="Entrypoints" icon="door-open">
+    `src/entrypoints/` — CLI bootstrap, fast-path dispatch, daemon workers, bridge, remote runners.
+  </Card>
+  <Card title="Commands" icon="terminal">
+    `src/commands/` + `src/commands.ts` — slash commands, skills, plugin commands, workflow commands.
+  </Card>
+  <Card title="Tools" icon="wrench">
+    `src/tools/` — model-callable tools: file I/O, shell, web, agent, MCP, and more.
+  </Card>
+</CardGroup>
+
+Each layer depends only on the layers below it. Entrypoints call commands; commands call tools; tools call services and utils.
+
+## Terminal UI: React + Ink
+
+When the full CLI loads, it renders an interactive terminal application using [Ink](https://github.com/vadimdemedes/ink) — a React renderer for the terminal.
+
+```
+src/
+  components/   React UI components (REPL, messages, pickers, …)
+  hooks/        Custom React hooks (useCanUseTool, useMessages, …)
+  ink/          Ink-specific wrappers and helpers
+```
+
+The REPL loop lives in `src/main.tsx`. It orchestrates the terminal UI, loads commands, and drives the conversation with the model. The UI renders entirely in the terminal — no browser, no web server.
+
+## Services layer
+
+`src/services/` provides shared, stateful capabilities used across the codebase:
+
+<CardGroup cols={2}>
+  <Card title="MCP" icon="plug">
+    `services/mcp/` — Model Context Protocol server management. Connects to external MCP servers and exposes their tools and resources.
+  </Card>
+  <Card title="OAuth" icon="key">
+    `services/oauth/` — OAuth 2.0 flows for claude.ai authentication.
+  </Card>
+  <Card title="Analytics" icon="chart-line">
+    `services/analytics/` — Event logging and GrowthBook feature flags.
+  </Card>
+  <Card title="Memory" icon="brain">
+    `services/memory/` — Session memory and CLAUDE.md loading.
+  </Card>
+  <Card title="Compact" icon="compress">
+    `services/compact/` — Context compaction when the token window fills up.
+  </Card>
+  <Card title="LSP" icon="code">
+    `services/lsp/` — Language Server Protocol integration for IDE-aware operations.
+  </Card>
+</CardGroup>
+
+## Utils layer
+
+`src/utils/` contains pure, stateless helpers:
+
+- **auth.ts** — OAuth token management and provider detection
+- **git.ts** — Git repository inspection and operations
+- **config.ts** — Settings file loading and merging
+- **shell/** — Shell command parsing, splitting, and security utilities
+- **permissions/** — Permission rule matching, classifiers, and path validation
+- **bash/** — AST parsing for bash security analysis
+- **sandbox/** — Sandbox adapter for running commands in isolation
+
+## Feature flags and build variants
+
+Claude Code uses Bun's `feature()` function from `bun:bundle` for build-time dead code elimination (DCE). Feature flags are evaluated at bundle time; branches that evaluate to `false` are completely removed from the output bundle.
+
+```typescript
+import { feature } from 'bun:bundle'
+
+// This entire block is removed from external builds
+if (feature('DUMP_SYSTEM_PROMPT') && args[0] === '--dump-system-prompt') {
+  // ant-only system prompt dumping
+}
+
+// Conditional import — module never loads if flag is false
+const proactive = feature('PROACTIVE') || feature('KAIROS')
+  ? require('./commands/proactive.js').default
+  : null
+```
+
+<Note>
+Feature flags are **not** runtime toggles. They are evaluated when the bundle is compiled, so external (public) builds have their ant-only code physically absent from the bundle rather than just disabled.
+</Note>
+
+This mechanism produces two distinct build variants:
+
+- **External build** — shipped to users via `npm`; ant-only features are DCE'd out entirely.
+- **Internal (ant) build** — used at Anthropic; all features are available.
+
+## Internal-only commands
+
+Commands that only make sense in Anthropic's internal environment are collected in `INTERNAL_ONLY_COMMANDS`:
+
+```typescript
+export const INTERNAL_ONLY_COMMANDS = [
+  backfillSessions,
+  breakCache,
+  bughunter,
+  commit,
+  commitPushPr,
+  ctx_viz,
+  goodClaude,
+  issue,
+  initVerifiers,
+  mockLimits,
+  bridgeKick,
+  version,
+  resetLimits,
+  resetLimitsNonInteractive,
+  onboarding,
+  share,
+  summary,
+  teleport,
+  antTrace,
+  perfIssue,
+  env,
+  oauthRefresh,
+  debugToolCall,
+  agentsPlatform,
+  autofixPr,
+].filter(Boolean)
+```
+
+These commands are only included in the `COMMANDS()` array when `process.env.USER_TYPE === 'ant'` and `IS_DEMO` is not set.
+
+## How commands are loaded
+
+`loadAllCommands(cwd)` is the single entry point for gathering every available command. It runs four sources in parallel and merges the results:
+
+```typescript
+const loadAllCommands = memoize(async (cwd: string): Promise<Command[]> => {
+  const [
+    { skillDirCommands, pluginSkills, bundledSkills, builtinPluginSkills },
+    pluginCommands,
+    workflowCommands,
+  ] = await Promise.all([
+    getSkills(cwd),
+    getPluginCommands(),
+    getWorkflowCommands ? getWorkflowCommands(cwd) : Promise.resolve([]),
+  ])
+
+  return [
+    ...bundledSkills,
+    ...builtinPluginSkills,
+    ...skillDirCommands,
+    ...workflowCommands,
+    ...pluginCommands,
+    ...pluginSkills,
+    ...COMMANDS(),
+  ]
+})
+```
+
+The load order determines precedence in autocomplete and command lookup. Bundled and built-in plugin skills appear first; built-in commands appear last.
+
+| Source | Where it comes from |
+|---|---|
+| `bundledSkills` | Compiled into the bundle via `getBundledSkills()` |
+| `builtinPluginSkills` | Enabled built-in plugins via `getBuiltinPluginSkillCommands()` |
+| `skillDirCommands` | `.claude/skills/` directories discovered on disk |
+| `workflowCommands` | Workflow scripts (feature-gated with `WORKFLOW_SCRIPTS`) |
+| `pluginCommands` | Installed user plugins |
+| `pluginSkills` | Skill commands from installed plugins |
+| `COMMANDS()` | Built-in slash commands defined in `src/commands.ts` |

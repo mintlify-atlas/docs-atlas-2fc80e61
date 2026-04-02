@@ -1,0 +1,160 @@
+---
+title: "Installation"
+description: "Install Claude Code 2.1.88 from the Tencent mirror cache, set up authentication, and configure your environment."
+---
+
+## Why you need the mirror
+
+`@anthropic-ai/claude-code@2.1.88` was published to npm on March 31, 2026 with a `cli.js.map` source map that accidentally included the full TypeScript source (approximately 700,000 lines). The package was pulled from the official npm registry shortly after.
+
+Direct installation via `npm install @anthropic-ai/claude-code@2.1.88` will fail with a "not found" error. The Tencent npm mirror (`mirrors.cloud.tencent.com`) cached the tarball before it was removed and currently still serves it.
+
+<Warning>
+  The Tencent mirror cache may not serve this package indefinitely. If the URL stops working, the tarball may need to be sourced elsewhere or installed from a local copy.
+</Warning>
+
+## Install Claude Code
+
+<Steps>
+  <Step title="Install from the Tencent mirror">
+    Run the following command to install Claude Code 2.1.88 globally:
+
+    <CodeGroup>
+
+    ```bash npm
+    npm install -g https://mirrors.cloud.tencent.com/npm/@anthropic-ai/claude-code/-/claude-code-2.1.88.tgz
+    ```
+
+    ```bash pnpm
+    pnpm add -g https://mirrors.cloud.tencent.com/npm/@anthropic-ai/claude-code/-/claude-code-2.1.88.tgz
+    ```
+
+    ```bash yarn
+    yarn global add https://mirrors.cloud.tencent.com/npm/@anthropic-ai/claude-code/-/claude-code-2.1.88.tgz
+    ```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Verify the installation">
+    Confirm that `claude` is on your PATH and the version is correct:
+
+    ```bash
+    claude --version
+    ```
+
+    Expected output:
+
+    ```
+    2.1.88 (Claude Code)
+    ```
+  </Step>
+
+  <Step title="Authenticate">
+    Choose one of the two authentication methods below, then run `claude` to start the REPL.
+  </Step>
+</Steps>
+
+## Authentication
+
+<Tabs>
+  <Tab title="API key">
+    Set the `ANTHROPIC_API_KEY` environment variable before running `claude`. Add it to your shell profile to persist across sessions:
+
+    ```bash
+    export ANTHROPIC_API_KEY=sk-ant-api03-...
+    ```
+
+    Then start the REPL:
+
+    ```bash
+    claude
+    ```
+
+    Claude Code will use this key for all API calls. No browser interaction is required.
+  </Tab>
+  <Tab title="OAuth (claude.ai)">
+    If you have a Claude.ai subscription, you can authenticate with OAuth instead of an API key. Start the REPL without setting `ANTHROPIC_API_KEY`:
+
+    ```bash
+    claude
+    ```
+
+    Claude Code will print a login URL on first launch. Open it in your browser to complete the OAuth flow. Your credentials are stored locally in `~/.claude/`.
+
+    You can also trigger login explicitly from inside the REPL at any time:
+
+    ```
+    > /login
+    ```
+  </Tab>
+</Tabs>
+
+## Environment variables
+
+| Variable | Description |
+|---|---|
+| `ANTHROPIC_API_KEY` | Your Anthropic API key (`sk-ant-...`). Required if not using OAuth. |
+| `CLAUDE_CODE_REMOTE` | Set to `true` to signal that Claude Code is running in a remote/container environment. When set, the Node.js heap limit is automatically raised to 8 GB via `NODE_OPTIONS`. |
+| `NODE_OPTIONS` | Passed directly to Node.js. Claude Code appends `--max-old-space-size=8192` when `CLAUDE_CODE_REMOTE=true`. Avoid conflicting flags. |
+| `CLAUDE_CODE_SIMPLE` | Set to `1` to enable bare/simple mode, disabling background tasks and thinking features. Equivalent to passing `--bare`. |
+| `CLAUDE_CODE_DISABLE_THINKING` | Set to `1` to disable extended thinking. |
+| `DISABLE_COMPACT` | Set to `1` to prevent automatic conversation compaction. |
+| `DISABLE_AUTO_COMPACT` | Set to `1` to disable background auto-compaction without disabling manual `/compact`. |
+
+<Note>
+  `CLAUDE_CODE_SIMPLE`, `CLAUDE_CODE_DISABLE_THINKING`, `DISABLE_COMPACT`, and `DISABLE_AUTO_COMPACT` are also set automatically when `CLAUDE_CODE_ABLATION_BASELINE` is enabled (an internal Anthropic research flag for L0 ablation baselines).
+</Note>
+
+## System requirements
+
+| Requirement | Minimum |
+|---|---|
+| Node.js | 18.x or later (LTS recommended) |
+| npm | 8.x or later |
+| Operating system | macOS, Linux, or Windows (WSL2 recommended on Windows) |
+| Internet connection | Required for API calls; some features (file editing, bash) work offline |
+
+<Info>
+  Claude Code is built with Bun at compile time but the published package runs on Node.js. You do not need Bun installed to run Claude Code — only Node.js is required.
+</Info>
+
+## Installed files
+
+After installation, Claude Code creates a configuration directory at `~/.claude/`:
+
+```
+~/.claude/
+├── settings.json       # Global user settings
+├── credentials.json    # OAuth tokens (if using claude.ai login)
+├── sessions/           # Session registry for background session management
+├── memory.md           # Global user memory file (read at every session start)
+└── plugins/            # Installed plugins
+```
+
+Project-level settings are stored in `.claude/` relative to your project root:
+
+```
+my-project/
+└── .claude/
+    ├── settings.json   # Project-specific settings and permissions
+    └── CLAUDE.md       # Project memory file (read at every session start)
+```
+
+## Uninstall
+
+To remove Claude Code:
+
+```bash
+npm uninstall -g @anthropic-ai/claude-code
+```
+
+To also remove all local configuration and session data:
+
+```bash
+rm -rf ~/.claude
+```
+
+<Warning>
+  Removing `~/.claude/` will permanently delete your session history, stored credentials, memory files, and plugin installations.
+</Warning>

@@ -1,0 +1,244 @@
+---
+title: "Plugins"
+description: "Packages that extend Claude Code with commands, skills, hooks, and MCP servers."
+---
+
+Plugins are versioned packages that add capabilities to Claude Code. A single plugin can bundle slash commands, skills, lifecycle hooks, MCP servers, and LSP servers. Users manage plugins through the `/plugin` command; developers distribute them via git repositories or marketplaces.
+
+## Plugin manifest
+
+Every plugin contains a `plugin.json` manifest. The schema is defined in `src/utils/plugins/schemas.ts` and validated at load time.
+
+```json
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "description": "Adds deployment tools and best-practice reminders.",
+  "author": {
+    "name": "Your Name",
+    "email": "you@example.com",
+    "url": "https://github.com/you"
+  },
+  "homepage": "https://github.com/you/my-plugin",
+  "license": "MIT"
+}
+```
+
+### Manifest fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Unique kebab-case identifier. Used for namespacing commands as `/plugin-name:command`. |
+| `version` | `string` | Semantic version string. |
+| `description` | `string` | Shown in `/plugin` UI. |
+| `author` | `PluginAuthor` | `{ name, email?, url? }` |
+| `homepage` | `string` | URL for documentation. |
+| `license` | `string` | SPDX identifier (e.g., `MIT`). |
+| `commands` | `string \| string[] \| Record<string, CommandMetadata>` | Extra command files beyond `commands/`. |
+| `skills` | `string \| string[]` | Extra skill directories beyond `skills/`. |
+| `hooks` | `string \| HooksSettings \| Array<...>` | Additional hooks, inline or via file path. |
+| `mcpServers` | `Record<string, McpServerConfig>` | MCP servers this plugin provides. |
+| `dependencies` | `DependencyRef[]` | Other plugins that must be enabled. |
+
+## TypeScript types
+
+The core plugin types live in `src/types/plugin.ts`:
+
+```typescript
+// src/types/plugin.ts
+
+export type LoadedPlugin = {
+  name: string
+  manifest: PluginManifest
+  path: string
+  source: string          // e.g. 'slack@anthropic'
+  repository: string
+  enabled?: boolean
+  isBuiltin?: boolean     // true for built-in plugins shipped with the CLI
+  sha?: string            // git commit SHA for version pinning
+  commandsPath?: string
+  commandsPaths?: string[]
+  commandsMetadata?: Record<string, CommandMetadata>
+  skillsPath?: string
+  skillsPaths?: string[]
+  hooksConfig?: HooksSettings
+  mcpServers?: Record<string, McpServerConfig>
+  lspServers?: Record<string, LspServerConfig>
+  settings?: Record<string, unknown>
+}
+
+export type BuiltinPluginDefinition = {
+  name: string
+  description: string
+  version?: string
+  skills?: BundledSkillDefinition[]
+  hooks?: HooksSettings
+  mcpServers?: Record<string, McpServerConfig>
+  isAvailable?: () => boolean
+  defaultEnabled?: boolean
+}
+```
+
+## Plugin directory layout
+
+```
+my-plugin/
+├── plugin.json          ← manifest (required)
+├── commands/
+│   ├── deploy.md        ← slash command /my-plugin:deploy
+│   └── rollback.md
+├── skills/
+│   └── preflight/
+│       └── SKILL.md     ← skill /my-plugin:preflight
+├── hooks/
+│   └── hooks.json       ← lifecycle hooks
+└── mcp/
+    └── server           ← binary or script for stdio MCP server
+```
+
+Commands in `commands/` become `/plugin-name:command-name`. Skills in `skills/` follow the same directory-per-skill layout as user skills.
+
+## Installing a plugin
+
+Use the `/plugin` slash command inside Claude Code:
+
+```
+/plugin install github:owner/repo
+/plugin install github:owner/repo@main
+```
+
+The CLI clones the repository, validates `plugin.json`, and persists the reference to user settings. On subsequent starts, the plugin is loaded from the local cache.
+
+## Managing plugins
+
+| Command | Effect |
+|---------|--------|
+| `/plugin` | Open the plugin management UI |
+| `/plugin install <source>` | Install a plugin |
+| `/plugin enable <name>` | Enable a disabled plugin |
+| `/plugin disable <name>` | Disable without uninstalling |
+| `/reload-plugins` | Hot-reload all plugins in the current session without restarting |
+
+<Tip>
+`/reload-plugins` is useful during plugin development. Edit your plugin files, then reload without restarting Claude Code to pick up the changes immediately.
+</Tip>
+
+## Built-in plugins
+
+Built-in plugins ship inside the CLI binary and appear in the `/plugin` UI under a "Built-in" section. Users can toggle them on or off; the preference is saved to user settings.
+
+Built-in plugins differ from bundled skills (`src/skills/bundled/`) in that they are user-toggleable and can bundle multiple components (skills, hooks, MCP servers) as a single unit.
+
+Plugin IDs use the format `{name}@builtin` to distinguish them from marketplace plugins (`{name}@marketplace`).
+
+The registry lives in `src/plugins/bundled/index.ts`:
+
+```typescript
+// src/plugins/bundled/index.ts
+export function initBuiltinPlugins(): void {
+  // Register built-in plugins here via registerBuiltinPlugin()
+}
+```
+
+### Registering a built-in plugin
+
+```typescript
+import { registerBuiltinPlugin } from '../builtinPlugins.js'
+
+registerBuiltinPlugin({
+  name: 'my-feature',
+  description: 'Enables advanced refactoring tools.',
+  defaultEnabled: false,   // opt-in rather than opt-out
+  skills: [
+    {
+      name: 'extract-function',
+      description: 'Extracts selected code into a named function.',
+      async getPromptForCommand(args, ctx) {
+        return [{ type: 'text', text: 'Extract the following into a function...' }]
+      },
+    },
+  ],
+})
+```
+
+### Reading built-in plugin state
+
+```typescript
+import { getBuiltinPlugins, getBuiltinPluginSkillCommands } from './builtinPlugins.js'
+
+// Get all built-in plugins split into enabled / disabled
+const { enabled, disabled } = getBuiltinPlugins()
+
+// Get skill Command objects for all enabled built-in plugins
+const commands = getBuiltinPluginSkillCommands()
+```
+
+Internally, `getBuiltinPlugins()` reads user settings to check `enabledPlugins[pluginId]`, falling back to `definition.defaultEnabled ?? true`.
+
+## Plugin commands
+
+Commands contributed by plugins look identical to built-in commands with two differences: `source` is set to the plugin's source identifier (e.g., `'slack@anthropic'`), and they carry `pluginInfo` metadata. Use `getPluginCommands()` to retrieve them:
+
+```typescript
+// Command shape for plugin-provided commands
+{
+  type: 'prompt',
+  name: 'my-plugin:deploy',
+  source: 'my-plugin@github',
+  loadedFrom: 'plugin',
+  // ...
+}
+```
+
+## Command metadata format
+
+When using the object-mapping format in `plugin.json`, each command entry can override its defaults:
+
+```json
+{
+  "commands": {
+    "deploy": {
+      "source": "./commands/deploy.md",
+      "description": "Deploy to production with one command.",
+      "argumentHint": "[environment]",
+      "allowedTools": ["Bash", "Read"]
+    },
+    "inline-tip": {
+      "content": "## Quick Tip\nAlways run `npm test` before committing.",
+      "description": "Shows a testing reminder."
+    }
+  }
+}
+```
+
+`CommandMetadata` fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | `string` | Relative path to the `.md` file |
+| `content` | `string` | Inline markdown (mutually exclusive with `source`) |
+| `description` | `string` | Overrides the frontmatter description |
+| `argumentHint` | `string` | Displayed argument hint |
+| `model` | `string` | Default model for this command |
+| `allowedTools` | `string[]` | Tools the command may call |
+
+## Plugin error types
+
+When a plugin fails to load, Claude Code reports a typed `PluginError`. The full discriminated union is in `src/types/plugin.ts`:
+
+```typescript
+type PluginError =
+  | { type: 'plugin-not-found'; source: string; pluginId: string; marketplace: string }
+  | { type: 'git-auth-failed'; source: string; gitUrl: string; authType: 'ssh' | 'https' }
+  | { type: 'mcp-config-invalid'; source: string; plugin: string; serverName: string; validationError: string }
+  | { type: 'mcp-server-suppressed-duplicate'; source: string; plugin: string; serverName: string; duplicateOf: string }
+  | { type: 'hook-load-failed'; source: string; plugin: string; hookPath: string; reason: string }
+  | { type: 'generic-error'; source: string; plugin?: string; error: string }
+  // … and more
+```
+
+Use `getPluginErrorMessage(error)` to get a human-readable string for any error type.
+
+## Plugin settings
+
+Plugins can declare user-configurable options in `plugin.json` under `userConfig`. Options are stored per-plugin and accessible via `loadPluginOptions()` during hook and skill execution. The `$PLUGIN_ROOT` variable in hook commands is automatically substituted with the plugin's install path.

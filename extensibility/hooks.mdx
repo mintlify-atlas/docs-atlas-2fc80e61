@@ -1,0 +1,491 @@
+---
+title: "Hooks"
+description: "Shell commands, HTTP endpoints, and LLM prompts that run at lifecycle events in Claude Code."
+---
+
+Hooks are user-defined handlers that Claude Code calls at specific lifecycle events. Use them to enforce policies, log activity, run formatters, auto-commit changes, or inject context into the model's view.
+
+## Hook types
+
+There are four kinds of hooks, each a distinct type in the `HookCommand` discriminated union:
+
+```typescript
+// src/schemas/hooks.ts
+type HookCommand =
+  | BashCommandHook   // type: 'command' — runs a shell command
+  | PromptHook        // type: 'prompt'  — evaluates an LLM prompt
+  | AgentHook         // type: 'agent'   — runs a full sub-agent
+  | HttpHook          // type: 'http'    — POSTs to an HTTP endpoint
+```
+
+### command — shell hook
+
+The most common type. Runs a shell command and optionally reads its stdout for control output.
+
+```json
+{
+  "type": "command",
+  "command": "prettier --write $TOOL_INPUT_PATH",
+  "if": "Write(*.ts)",
+  "timeout": 30,
+  "shell": "bash",
+  "statusMessage": "Formatting…"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `command` | `string` | Shell command to execute |
+| `if` | `string` | Permission-rule filter (e.g., `"Bash(git *)"`) — hook only runs if the current tool call matches |
+| `timeout` | `number` | Timeout in seconds (default: 10 minutes for tool hooks, 1.5 seconds for SessionEnd) |
+| `shell` | `"bash" \| "powershell"` | Shell interpreter. `bash` uses your `$SHELL`; `powershell` uses `pwsh`. |
+| `statusMessage` | `string` | Custom spinner text while the hook runs |
+| `once` | `boolean` | Run once then remove from the hook registry |
+| `async` | `boolean` | Run in background without blocking the model |
+| `asyncRewake` | `boolean` | Run in background; wake the model on exit code 2 |
+
+### prompt — LLM prompt hook
+
+Sends a prompt to a model (defaults to a small fast model). Use this for lightweight code review, policy checks, or context injection.
+
+```json
+{
+  "type": "prompt",
+  "prompt": "Check whether the bash command in $ARGUMENTS looks safe to run. Output JSON with {decision: 'approve'} or {decision: 'block', reason: '...'}.",
+  "if": "Bash",
+  "model": "claude-haiku-4-5",
+  "timeout": 30
+}
+```
+
+### agent — sub-agent hook
+
+Runs a full autonomous agent to verify a condition. Useful for multi-step checks that require reading files or running commands.
+
+```json
+{
+  "type": "agent",
+  "prompt": "Verify that unit tests ran and passed. Check test output files if present.",
+  "timeout": 120,
+  "model": "claude-haiku-4-5"
+}
+```
+
+### http — HTTP webhook
+
+POSTs the hook input as JSON to an HTTP endpoint. Useful for centralized logging, audit trails, or external policy enforcement.
+
+```json
+{
+  "type": "http",
+  "url": "https://audit.example.com/claude-events",
+  "headers": {
+    "Authorization": "Bearer $AUDIT_TOKEN"
+  },
+  "allowedEnvVars": ["AUDIT_TOKEN"],
+  "timeout": 10
+}
+```
+
+Header values support `$VAR` substitution. Only variables listed in `allowedEnvVars` are interpolated — all others resolve to empty strings.
+
+## Lifecycle events
+
+Hooks are attached to named lifecycle events. The full list is defined in `src/entrypoints/sdk/coreTypes.ts`:
+
+```typescript
+export const HOOK_EVENTS = [
+  'PreToolUse',          // before Claude executes any tool
+  'PostToolUse',         // after a tool completes successfully
+  'PostToolUseFailure',  // after a tool call fails
+  'Notification',        // when Claude Code sends a notification
+  'UserPromptSubmit',    // when the user submits a message
+  'SessionStart',        // when a session begins
+  'SessionEnd',          // when a session ends (tight timeout: 1.5 s default)
+  'Stop',                // when Claude stops (turn complete)
+  'StopFailure',         // when Claude stops due to an error
+  'SubagentStart',       // when a sub-agent starts
+  'SubagentStop',        // when a sub-agent finishes
+  'PreCompact',          // before context compaction
+  'PostCompact',         // after context compaction
+  'PermissionRequest',   // when a permission prompt is shown
+  'PermissionDenied',    // when a permission is denied
+  'Setup',               // initial setup phase
+  'TeammateIdle',        // in multi-agent: a teammate is idle
+  'TaskCreated',         // in task mode: a task is created
+  'TaskCompleted',       // in task mode: a task completes
+  'Elicitation',         // MCP elicitation request received
+  'ElicitationResult',   // MCP elicitation result available
+  'ConfigChange',        // settings changed
+  'WorktreeCreate',      // git worktree created
+  'WorktreeRemove',      // git worktree removed
+  'InstructionsLoaded',  // CLAUDE.md loaded
+  'CwdChanged',          // working directory changed
+  'FileChanged',         // a watched file changed
+] as const
+```
+
+## Hook input (environment / stdin)
+
+When a hook runs, Claude Code provides context in two ways:
+
+1. **Environment variables** set on the subprocess
+2. **JSON on stdin** (for `command` hooks) — the hook input object for the event
+
+### Common fields in every hook input
+
+```typescript
+{
+  session_id: string        // current session UUID
+  transcript_path: string   // path to the session transcript file
+  cwd: string               // current working directory
+  permission_mode?: string  // active permission mode
+  agent_id?: string         // set when running inside a sub-agent
+  agent_type?: string       // type of the current agent
+}
+```
+
+### PreToolUse input
+
+```typescript
+{
+  // ...base fields
+  hook_event_name: 'PreToolUse'
+  tool_name: string          // e.g. 'Bash', 'Write', 'mcp__slack__send_message'
+  tool_input: Record<string, unknown>  // the tool's input arguments
+}
+```
+
+### PostToolUse input
+
+```typescript
+{
+  hook_event_name: 'PostToolUse'
+  tool_name: string
+  tool_input: Record<string, unknown>
+  tool_response: unknown     // the tool's output
+}
+```
+
+### SessionStart input
+
+```typescript
+{
+  hook_event_name: 'SessionStart'
+  // ...base fields
+}
+```
+
+### UserPromptSubmit input
+
+```typescript
+{
+  hook_event_name: 'UserPromptSubmit'
+  user_message: string       // the message the user submitted
+}
+```
+
+## Hook output (control JSON)
+
+Shell hooks (`command` type) can print JSON to stdout to influence Claude Code's behavior. Non-JSON output is treated as plain text and shown in the transcript. The schema is defined in `src/schemas/hooks.ts`:
+
+```json
+{
+  "continue": true,
+  "suppressOutput": false,
+  "stopReason": "string shown when continue is false",
+  "decision": "approve | block",
+  "reason": "explanation",
+  "systemMessage": "warning shown to user",
+  "hookSpecificOutput": { ... }
+}
+```
+
+### PreToolUse control
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow | deny | ask",
+    "permissionDecisionReason": "optional explanation",
+    "updatedInput": { "command": "modified command" }
+  }
+}
+```
+
+- `permissionDecision: "allow"` — approve the tool call without showing a permission prompt
+- `permissionDecision: "deny"` — block the tool call; Claude sees an error
+- `permissionDecision: "ask"` — force a permission prompt even if the tool would otherwise be allowed
+- `updatedInput` — replace the tool's input before execution (e.g., sanitize a command)
+
+### PostToolUse control
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "Reminder: the database schema changed, re-run migrations."
+  }
+}
+```
+
+`additionalContext` is injected into the model's next turn as a system message.
+
+### UserPromptSubmit control
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "User is working in a production environment."
+  }
+}
+```
+
+### Exit codes
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | Success — continue normally |
+| `1` | Non-blocking error — logged, execution continues |
+| `2` | Blocking error — halt current operation (for `asyncRewake` hooks, wakes the model) |
+
+## Configuring hooks
+
+<Tabs>
+  <Tab title="settings.json">
+    Add to `~/.claude/settings.json` (user scope) or `.claude/settings.json` (project scope):
+
+    ```json
+    {
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "echo \"[hook] About to run bash: $TOOL_INPUT_COMMAND\" >> /tmp/claude-audit.log"
+              }
+            ]
+          }
+        ],
+        "PostToolUse": [
+          {
+            "matcher": "Write",
+            "hooks": [
+              {
+                "type": "command",
+                "command": "prettier --write \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+              }
+            ]
+          }
+        ]
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="/hooks command">
+    Type `/hooks` in Claude Code to open the interactive hook configuration UI. It shows all currently configured hooks grouped by event and provides controls to add, edit, or remove them.
+  </Tab>
+  <Tab title="Skill frontmatter">
+    Skills can define their own hooks in frontmatter, scoped to that skill's execution:
+
+    ```markdown
+    ---
+    description: "Deploys the application."
+    hooks:
+      PostToolUse:
+        - matcher: "Bash"
+          hooks:
+            - type: command
+              command: "notify-send 'Deployment complete'"
+    ---
+    ```
+  </Tab>
+</Tabs>
+
+## Hook matchers
+
+The `matcher` field filters which tool calls trigger the hook. It uses the same permission rule syntax as `settings.json` allow/deny rules:
+
+```json
+{ "matcher": "Bash" }                  // any Bash call
+{ "matcher": "Bash(git *)" }           // Bash calls whose command starts with "git"
+{ "matcher": "Write(*.ts)" }           // Write calls to TypeScript files
+{ "matcher": "mcp__slack__*" }         // any Slack MCP tool
+```
+
+When `matcher` is omitted, the hook runs for every occurrence of that event.
+
+The `if` field on individual `command` hooks provides a second layer of filtering evaluated just before spawning the subprocess, saving process startup cost for non-matching calls.
+
+## Security
+
+All hooks require workspace trust before they execute. In interactive sessions, hooks are silently skipped until the user accepts the trust dialog. This prevents hooks defined in a project's `.claude/settings.json` from running in untrusted repositories.
+
+```typescript
+// src/utils/hooks.ts:286
+export function shouldSkipHookDueToTrust(): boolean {
+  const isInteractive = !getIsNonInteractiveSession()
+  if (!isInteractive) return false    // SDK: trust is implicit
+  return !checkHasTrustDialogAccepted()
+}
+```
+
+In non-interactive (SDK) mode, trust is implicit and hooks always run.
+
+<Warning>
+Hooks execute with your user permissions. A malicious `settings.json` committed to a repository could run arbitrary commands. Always review hook configurations before accepting workspace trust.
+</Warning>
+
+## Practical examples
+
+### Logging all tool use
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$(date -u +%Y-%m-%dT%H:%M:%SZ) $TOOL_NAME\" >> ~/.claude/tool-audit.log",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Auto-format on write
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write(*.py)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "black \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null || true",
+            "statusMessage": "Formatting Python…"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Auto-commit after changes
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git diff --quiet || (git add -A && git commit -m 'auto: claude session changes')",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Block dangerous commands
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT_COMMAND\" | grep -qE 'rm -rf|DROP TABLE'; then echo '{\"decision\":\"block\",\"reason\":\"Destructive command requires manual confirmation.\"}'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Inject context on session start
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"Running in production. All changes are live immediately.\"}}'",
+            "once": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## Plugin-provided hooks
+
+Plugins can ship hooks in `hooks/hooks.json` relative to their root, or inline in `plugin.json`:
+
+```json
+{
+  "name": "my-plugin",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/post-write-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `${CLAUDE_PLUGIN_ROOT}` variable is automatically substituted with the plugin's install directory.
+
+## Async hooks
+
+Set `async: true` to run a hook in the background without blocking Claude:
+
+```json
+{
+  "type": "command",
+  "command": "send-telemetry-event --event tool_use --tool $TOOL_NAME",
+  "async": true
+}
+```
+
+For hooks that need to wake the model with results, use `asyncRewake: true`. When the hook exits with code `2`, Claude Code enqueues the hook's stderr/stdout as a task notification that wakes the model on its next idle tick.
+
+## SessionEnd timeout
+
+`SessionEnd` hooks have a much shorter default timeout (1.5 seconds) because they run during shutdown. Override with:
+
+```bash
+export CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS=5000
+```

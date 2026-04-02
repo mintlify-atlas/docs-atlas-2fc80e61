@@ -1,0 +1,311 @@
+---
+title: "Troubleshooting"
+description: "Solutions for common Claude Code issues including authentication errors, MCP connectivity, high memory usage, and session recovery."
+---
+
+<AccordionGroup>
+
+  <Accordion title="Installation fails or package not found">
+    Claude Code v2.1.88 was **pulled from the official npm registry** shortly after its accidental release. Direct `npm install @anthropic-ai/claude-code@2.1.88` will fail with a "not found" error. You must use the Tencent mirror cache instead.
+
+    **Install from the Tencent mirror:**
+    ```bash
+    npm install -g https://mirrors.cloud.tencent.com/npm/@anthropic-ai/claude-code/-/claude-code-2.1.88.tgz
+    ```
+
+    **Verify the installed version:**
+    ```bash
+    claude --version
+    # or
+    claude -v
+    ```
+
+    If you're behind a corporate proxy, set your proxy environment variables before installing:
+    ```bash
+    export HTTPS_PROXY=https://your-proxy:8080
+    npm install -g https://mirrors.cloud.tencent.com/npm/@anthropic-ai/claude-code/-/claude-code-2.1.88.tgz
+    ```
+
+    <Warning>
+    The Tencent mirror cache may not serve this package indefinitely. If the URL stops working, you will need to source the tarball from another location or use a local copy.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Authentication errors (API key or login)">
+    Authentication errors appear when your API key is missing, expired, or incorrect, or when Claude Code is using the wrong auth method for your setup.
+
+    **Check your API key is set:**
+    ```bash
+    echo $ANTHROPIC_API_KEY
+    ```
+
+    **Re-authenticate via OAuth (inside the REPL):**
+    ```
+    /login
+    ```
+
+    This opens a browser-based OAuth flow for claude.ai accounts. Use this when:
+    - You want Remote Control or Remote Sessions (requires OAuth, not API key)
+    - Your API key has expired
+    - You're switching between accounts
+
+    **For API key auth, set the key explicitly:**
+    ```bash
+    export ANTHROPIC_API_KEY=sk-ant-...
+    claude
+    ```
+
+    **For Bedrock or Vertex, set the provider flag:**
+    ```bash
+    # Amazon Bedrock
+    CLAUDE_CODE_USE_BEDROCK=1 claude
+
+    # Google Vertex AI
+    CLAUDE_CODE_USE_VERTEX=1 claude
+    ```
+
+    <Note>
+    Remote Control (`claude remote-control`) requires a claude.ai subscription and OAuth login — it does not work with API keys. Run `claude auth login` to use Remote Control.
+    </Note>
+  </Accordion>
+
+  <Accordion title="MCP server not connecting">
+    MCP server connection failures are usually caused by misconfigured server settings, authentication issues, or the server process exiting unexpectedly.
+
+    **Run diagnostics:**
+    ```bash
+    /doctor
+    ```
+
+    The `/doctor` command checks your system configuration and reports on MCP server connectivity, authentication state, and tool availability.
+
+    **Check the MCP server list:**
+    ```
+    /mcp
+    ```
+
+    This shows all configured MCP servers and their current state: `connected`, `pending`, or `failed`.
+
+    **Common causes and fixes:**
+
+    | Symptom | Likely cause | Fix |
+    |---|---|---|
+    | Server shows `failed` | Process crashed on startup | Check server logs; verify the command and args in your config |
+    | Server shows `pending` | Server is still connecting | Wait a moment; some servers take a few seconds to authenticate |
+    | Tool calls return "server not authenticated" | OAuth required | Use `McpAuth` tool or follow the server's auth flow |
+    | Server connects but agent can't use it | Agent requires the server but it's pending | `AgentTool` waits up to 30 seconds for required MCP servers to finish connecting |
+
+    **Verify your MCP config file:**
+    ```bash
+    cat ~/.claude/settings.json | grep -A 20 '"mcpServers"'
+    ```
+  </Accordion>
+
+  <Accordion title="High memory usage">
+    Claude Code can use significant memory when working with large codebases or running multiple background agents. The default Node.js heap limit is 4 GB; remote container environments automatically raise this to 8 GB.
+
+    **Check current memory usage:**
+    ```
+    /cost
+    ```
+
+    This shows token counts and can help you identify if the context window is growing large.
+
+    **Compact the context to free tokens:**
+    ```
+    /compact
+    ```
+
+    `/compact` summarizes the conversation and replaces the full message history with a condensed version. This reduces both memory and token usage without losing the thread of work.
+
+    **For remote/container environments**, set the env var before starting:
+    ```bash
+    CLAUDE_CODE_REMOTE=true claude
+    ```
+
+    This automatically applies `--max-old-space-size=8192` to the Node.js process.
+
+    **Generate a heap dump for debugging:**
+    ```
+    /heapdump
+    ```
+
+    The `/heapdump` command writes a `.heapsnapshot` file and a diagnostics report to disk. Use Chrome DevTools or `@anthropic-ai/node` to analyze the snapshot.
+
+    **Disable background tasks to reduce memory pressure:**
+    ```bash
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
+    ```
+  </Accordion>
+
+  <Accordion title="Tool permission denied">
+    Permission errors occur when Claude Code's permission mode prevents a tool from running automatically, or when a deny rule blocks a specific tool or command.
+
+    **Open the permissions manager:**
+    ```
+    /permissions
+    ```
+
+    This shows your current permission rules and lets you add, remove, or modify them interactively.
+
+    **Common permission patterns:**
+
+    ```json
+    // Always allow a specific command
+    {"allow": "Bash(npm run test)"}
+
+    // Always allow reads in a directory
+    {"allow": "Read(/home/user/project/**)"}
+
+    // Deny an agent type
+    {"deny": "Agent(bughunter)"}
+    ```
+
+    **Toggle sandbox mode:**
+    ```
+    /sandbox-toggle
+    ```
+
+    Sandbox mode restricts all shell commands to a read-only environment. Toggle it off if you need write access.
+
+    **Run without any permission prompts (dangerous):**
+    ```bash
+    claude --dangerously-skip-permissions
+    ```
+
+    <Warning>
+    `--dangerously-skip-permissions` bypasses all permission checks. Only use this in isolated environments like containers where you fully control the execution context.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Bash command blocked by security checks">
+    Claude Code's BashTool runs security validation on every command before execution. Some commands are blocked because they match destructive patterns or involve paths outside your working directory.
+
+    **Destructive command warnings** appear for commands like `rm -rf`, `git push --force`, or writing to system directories. These require explicit user confirmation even in `acceptEdits` mode.
+
+    **Path validation** checks that file arguments resolve inside allowed working directories. Commands that use flags which bypass path validation (like `cp --target-directory=...`) may require manual approval:
+
+    ```
+    cp with flags requires manual approval to ensure path safety.
+    ```
+
+    **To allow a specific command permanently:**
+    ```
+    /permissions
+    # Add: {"allow": "Bash(your-command-here)"}
+    ```
+
+    **To allow all commands in a directory:**
+    ```bash
+    claude --add-dir /path/to/extra/dir
+    ```
+
+    **Debug a blocked command:**
+    ```
+    /debug-tool-call
+    ```
+
+    This shows the raw tool call input and the validation result so you can understand why a command was blocked.
+  </Accordion>
+
+  <Accordion title="Session crashed or lost">
+    Claude Code includes automatic session recovery. If the process exits unexpectedly, the session state is written to disk and can be resumed.
+
+    **Resume the most recent session:**
+    ```bash
+    claude --resume
+    # or interactively:
+    /resume
+    ```
+
+    **List available sessions to resume:**
+    ```
+    /resume
+    ```
+
+    This shows all recoverable sessions with timestamps and lets you select one.
+
+    **Session storage location:**
+    ```bash
+    ls ~/.claude/sessions/
+    ```
+
+    Each session is stored as a JSON file with the conversation history, tool results, and metadata needed for recovery.
+
+    **If a session cannot be recovered**, start fresh and use `/compact` proactively to keep your context manageable in long sessions:
+
+    ```
+    /compact    # summarize and free tokens mid-session
+    ```
+  </Accordion>
+
+  <Accordion title="Context window too long / auto-compact triggered">
+    When the conversation history grows large, Claude Code automatically compacts it to stay within the model's context window. You can also trigger compaction manually.
+
+    **Manual compaction:**
+    ```
+    /compact
+    ```
+
+    **Disable auto-compact (useful for debugging or evals):**
+    ```bash
+    DISABLE_AUTO_COMPACT=1 claude
+    ```
+
+    **Check current token usage:**
+    ```
+    /cost
+    ```
+
+    **Use `/export` to save the full conversation before compacting:**
+    ```
+    /export
+    ```
+
+    This writes the full conversation as markdown so you have a record before the history is summarized.
+  </Accordion>
+
+  <Accordion title="Debug logging and diagnostics">
+    Claude Code has several diagnostic tools for investigating unexpected behavior.
+
+    **Run the built-in diagnostics:**
+    ```
+    /doctor
+    ```
+
+    Reports system information, authentication state, MCP connectivity, and configuration.
+
+    **Debug a specific tool call:**
+    ```
+    /debug-tool-call
+    ```
+
+    Shows the raw input, permission check result, and output for the last tool call.
+
+    **View detailed trace logs (ant-internal builds):**
+    ```
+    /ant-trace
+    ```
+
+    **For performance issues:**
+    ```
+    /perf-issue
+    ```
+
+    Generates a performance report with startup timings and slow operation details.
+
+    **Check the version:**
+    ```bash
+    claude --version
+    claude -v
+    claude -V
+    ```
+
+    **Show session cost and token breakdown:**
+    ```
+    /cost
+    /usage
+    ```
+  </Accordion>
+
+</AccordionGroup>

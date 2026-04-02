@@ -1,0 +1,290 @@
+---
+title: "File Tools"
+description: "Source reference for file operation tools: Read, Edit, Write, Glob, Grep, and NotebookEdit."
+---
+
+File tools are the primary mechanism for reading, searching, and modifying files on the local filesystem. Each tool is implemented as a standalone module in `src/tools/`.
+
+---
+
+## Read (`FileReadTool`)
+
+**Source**: `src/tools/FileReadTool/`
+
+Reads file contents from the local filesystem. Supports plain text, images, PDFs (when supported by the runtime), and Jupyter notebooks.
+
+### Tool name
+
+```typescript
+export const FILE_READ_TOOL_NAME = 'Read'
+```
+
+### Description (from `prompt.ts`)
+
+```typescript
+export const DESCRIPTION = 'Read a file from the local filesystem.'
+```
+
+### Full prompt template
+
+```typescript
+export function renderPromptTemplate(
+  lineFormat: string,
+  maxSizeInstruction: string,
+  offsetInstruction: string,
+): string {
+  return `Reads a file from the local filesystem. You can access any file directly by using this tool.
+Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
+
+Usage:
+- The file_path parameter must be an absolute path, not a relative path
+- By default, it reads up to ${MAX_LINES_TO_READ} lines starting from the beginning of the file
+- You can optionally specify a line offset and limit
+- Results are returned using cat -n format, with line numbers starting at 1
+- This tool allows Claude Code to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Claude Code is a multimodal LLM.
+- This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs.
+- This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.`
+}
+```
+
+### Key constants
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `MAX_LINES_TO_READ` | `2000` | Default line limit per read |
+| `FILE_UNCHANGED_STUB` | (string) | Returned when a file hasn't changed since the last read in the same conversation |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `FileReadTool.ts` | Tool definition, input schema, `call()` implementation |
+| `prompt.ts` | Tool name, description, prompt template constants |
+| `imageProcessor.ts` | Converts image files to base64 for multimodal responses |
+| `limits.ts` | File size and line count limit enforcement |
+| `UI.tsx` | Ink render component for tool use/result display |
+
+---
+
+## Edit (`FileEditTool`)
+
+**Source**: `src/tools/FileEditTool/`
+
+Performs exact string replacements in files. Requires a prior `Read` call on the file in the same conversation.
+
+### Tool name
+
+```typescript
+export const FILE_EDIT_TOOL_NAME = 'Edit'
+```
+
+### Full description (from `prompt.ts`)
+
+```typescript
+export function getEditToolDescription(): string {
+  return `Performs exact string replacements in files.
+
+Usage:
+- You must use your \`Read\` tool at least once in the conversation before editing.
+- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
+- The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.`
+}
+```
+
+### Key constants
+
+```typescript
+// Permission pattern for granting session-level access to the project's .claude/ folder
+export const CLAUDE_FOLDER_PERMISSION_PATTERN = '/.claude/**'
+
+// Permission pattern for granting session-level access to the global ~/.claude/ folder
+export const GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN = '~/.claude/**'
+
+export const FILE_UNEXPECTEDLY_MODIFIED_ERROR =
+  'File has been unexpectedly modified. Read it again before attempting to write it.'
+```
+
+<Warning>
+The edit tool checks a file modification timestamp before writing. If the file changed on disk after the most recent `Read` call, the tool returns `FILE_UNEXPECTEDLY_MODIFIED_ERROR` and refuses to write.
+</Warning>
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `FileEditTool.ts` | Tool definition, `old_string`/`new_string` search-replace implementation |
+| `constants.ts` | Tool name, permission patterns, error messages |
+| `prompt.ts` | Tool description and usage instructions |
+| `types.ts` | Input/output schema types |
+| `utils.ts` | String uniqueness validation, indentation normalization |
+| `UI.tsx` | Diff display component wired to `FileEditToolDiff` |
+
+---
+
+## Write (`FileWriteTool`)
+
+**Source**: `src/tools/FileWriteTool/`
+
+Creates new files or completely rewrites existing ones. Prefer `Edit` for surgical modifications.
+
+### Tool name
+
+```typescript
+export const FILE_WRITE_TOOL_NAME = 'Write'
+```
+
+### Full description (from `prompt.ts`)
+
+```typescript
+export function getWriteToolDescription(): string {
+  return `Writes a file to the local filesystem.
+
+Usage:
+- This tool will overwrite the existing file if there is one at the provided path.
+- If this is an existing file, you MUST use the Read tool first to read the file's contents.
+- Prefer the Edit tool for modifying existing files — it only sends the diff. Only use this tool to create new files or for complete rewrites.
+- NEVER create documentation files (*.md) or README files unless explicitly requested by the User.
+- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`
+}
+```
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `FileWriteTool.ts` | Tool definition and `call()` implementation |
+| `prompt.ts` | Tool name, description |
+| `UI.tsx` | Ink render component |
+
+---
+
+## Glob (`GlobTool`)
+
+**Source**: `src/tools/GlobTool/`
+
+Fast file pattern matching. Returns matching paths sorted by modification time.
+
+### Tool name
+
+```typescript
+export const GLOB_TOOL_NAME = 'Glob'
+```
+
+### Description (from `prompt.ts`)
+
+```typescript
+export const DESCRIPTION = `- Fast file pattern matching tool that works with any codebase size
+- Supports glob patterns like "**/*.js" or "src/**/*.ts"
+- Returns matching file paths sorted by modification time
+- Use this tool when you need to find files by name patterns
+- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead`
+```
+
+### Example usage
+
+```typescript
+// Find all TypeScript source files
+Glob({ pattern: "src/**/*.ts" })
+
+// Find all test files in a specific directory
+Glob({ pattern: "tests/**/*.test.{ts,tsx}", path: "/home/user/project" })
+```
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `GlobTool.ts` | Tool definition, glob execution via `fast-glob` |
+| `prompt.ts` | Tool name and description |
+| `UI.tsx` | Match count and path list display |
+
+---
+
+## Grep (`GrepTool`)
+
+**Source**: `src/tools/GrepTool/`
+
+Content search using [ripgrep](https://github.com/BurntSushi/ripgrep). Full regex support with file type filtering.
+
+### Tool name
+
+```typescript
+export const GREP_TOOL_NAME = 'Grep'
+```
+
+### Description (from `prompt.ts`)
+
+```typescript
+export function getDescription(): string {
+  return `A powerful search tool built on ripgrep
+
+  Usage:
+  - ALWAYS use Grep for search tasks. NEVER invoke \`grep\` or \`rg\` as a Bash command.
+  - Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
+  - Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or type parameter (e.g., "js", "py", "rust")
+  - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
+  - Use Agent tool for open-ended searches requiring multiple rounds
+  - Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use \`interface\\{\\}\` to find \`interface{}\` in Go code)
+  - Multiline matching: By default patterns match within single lines only. For cross-line patterns, use \`multiline: true\`
+  `
+}
+```
+
+### Output modes
+
+| Mode | Returns |
+|---|---|
+| `files_with_matches` (default) | List of file paths containing at least one match |
+| `content` | File paths with matching lines and their content |
+| `count` | File paths with match counts per file |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `GrepTool.ts` | Tool definition, ripgrep invocation, output formatting |
+| `prompt.ts` | Tool name and description |
+| `UI.tsx` | Match result display |
+
+---
+
+## NotebookEdit (`NotebookEditTool`)
+
+**Source**: `src/tools/NotebookEditTool/`
+
+Edits individual cells in Jupyter notebook (`.ipynb`) files.
+
+### Description (from `prompt.ts`)
+
+```typescript
+export const DESCRIPTION =
+  'Replace the contents of a specific cell in a Jupyter notebook.'
+
+export const PROMPT = `Completely replaces the contents of a specific cell in a Jupyter notebook (.ipynb file) with new source.
+Jupyter notebooks are interactive documents that combine code, text, and visualizations, commonly used for data analysis and scientific computing.
+The notebook_path parameter must be an absolute path, not a relative path.
+The cell_number is 0-indexed.
+Use edit_mode=insert to add a new cell at the index specified by cell_number.
+Use edit_mode=delete to delete the cell at the index specified by cell_number.`
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `notebook_path` | `string` | Absolute path to the `.ipynb` file |
+| `cell_number` | `number` | 0-indexed cell position |
+| `new_source` | `string` | Replacement cell content |
+| `cell_type` | `"code" \| "markdown"` | Cell type for inserted cells |
+| `edit_mode` | `"replace" \| "insert" \| "delete"` | Edit operation |
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `NotebookEditTool.ts` | Tool definition, JSON patch application to `.ipynb` format |
+| `constants.ts` | Tool name constant |
+| `prompt.ts` | Description and usage prompt |
+| `UI.tsx` | Cell diff display |

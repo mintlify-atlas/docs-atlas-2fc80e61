@@ -1,0 +1,217 @@
+---
+title: "Services"
+description: "Source reference for src/services/ — the backend service layer handling MCP connections, OAuth, analytics, memory, compaction, LSP, rate limits, and plugins."
+---
+
+The `src/services/` directory contains stateful service modules that are initialized during startup and used throughout the session. Services are distinct from tools — they provide infrastructure rather than agent-callable capabilities.
+
+## MCP
+
+`src/services/mcp/` manages all Model Context Protocol connections to external servers.
+
+### MCPConnectionManager.tsx
+
+The central connection lifecycle manager. Tracks active MCP connections, handles reconnection, and multiplexes tool calls across servers. Exposes a React hook (`useManageMCPConnections`) for the settings UI to display connection status.
+
+### client.ts
+
+Low-level MCP client implementation. Wraps `@modelcontextprotocol/sdk` with Claude Code-specific retry logic, timeout handling, and error normalization.
+
+### auth.ts
+
+Handles MCP server authentication. Supports OAuth-based auth flows for remote MCP servers, including token storage and refresh.
+
+### channelPermissions.ts
+
+Enforces per-channel tool permission rules. When a Claude channel restricts which MCP tools can be called, this module applies the filter before dispatching.
+
+### channelAllowlist.ts
+
+Manages the allowlist of MCP servers permitted by channel policy.
+
+### elicitationHandler.ts
+
+Handles the MCP [elicitation protocol](https://spec.modelcontextprotocol.io/) — the mechanism by which MCP servers can request additional input from the user mid-call.
+
+### officialRegistry.ts
+
+Fetches and caches the official Anthropic MCP server registry. Used to populate the "Add server" dialog with verified server entries.
+
+### Additional MCP files
+
+| File | Purpose |
+|---|---|
+| `config.ts` | MCP server configuration parsing and validation |
+| `envExpansion.ts` | Expands `${ENV_VAR}` references in MCP server configs |
+| `headersHelper.ts` | Builds HTTP headers for remote MCP connections |
+| `InProcessTransport.ts` | In-process transport (no subprocess) for built-in MCP servers |
+| `normalization.ts` | Normalizes tool schemas from different MCP SDK versions |
+| `SdkControlTransport.ts` | Transport adapter for the SDK control channel |
+| `types.ts` | Shared MCP type definitions |
+| `utils.ts` | Utility functions (server name sanitization, etc.) |
+| `vscodeSdkMcp.ts` | VS Code extension MCP bridge |
+| `xaa.ts` | XAA (cross-account access) MCP integration |
+| `xaaIdpLogin.ts` | IdP login flow for XAA sessions |
+
+---
+
+## OAuth
+
+`src/services/oauth/` implements the OAuth 2.0 + PKCE authorization flow used for `console.anthropic.com` login.
+
+| File | Purpose |
+|---|---|
+| `client.ts` | OAuth client — initiates authorization, exchanges codes, stores tokens |
+| `auth-code-listener.ts` | Local HTTP server that listens for the OAuth redirect callback |
+| `crypto.ts` | PKCE code verifier/challenge generation using the Web Crypto API |
+| `getOauthProfile.ts` | Fetches the user's profile from the Anthropic API using the access token |
+| `index.ts` | Re-exports the public API of the OAuth service |
+
+---
+
+## Analytics
+
+`src/services/analytics/` handles telemetry and usage event logging.
+
+<Note>
+All telemetry is opt-out. Set `CLAUDE_CODE_DISABLE_TELEMETRY=1` or `DISABLE_TELEMETRY=1` to disable all event logging.
+</Note>
+
+Key modules:
+- **`index.ts`** — `logEvent()` function and event type registry
+- **`growthbook.ts`** — GrowthBook feature flag client. Used for gradual rollouts and A/B experiments. Caches flag values to disk between sessions; the in-memory cache is refreshed on a configurable schedule.
+
+---
+
+## Memory
+
+### SessionMemory/
+
+Manages persistent conversation memory — facts and context that survive across sessions. Reads from and writes to `~/.claude/memory.md` (global) and `.claude/memory.md` (project-scoped).
+
+### extractMemories/
+
+Contains the prompt templates and extraction logic used to distill new memories from conversation turns. Called at conversation checkpoints to identify facts worth persisting.
+
+---
+
+## Compact
+
+`src/services/compact/` handles conversation compaction — replacing earlier turns with a compressed summary to manage context window size.
+
+Compaction runs:
+- Automatically when the context window exceeds a configurable threshold (`DISABLE_AUTO_COMPACT=1` to disable)
+- Manually via the `/compact` command
+
+The `compact/` directory contains the summarization prompt templates and the token-estimation logic used to decide when compaction is needed.
+
+---
+
+## LSP
+
+`src/services/lsp/` provides Language Server Protocol integration.
+
+- **`manager.ts`** — `LspServerManager` singleton. Starts language servers on demand (one per language), routes hover/definition requests, and shuts down on process exit.
+- Supports TypeScript, Python, Rust, Go, and other LSP-capable languages.
+- LSP context is injected into tool calls (e.g., providing symbol definitions alongside file reads).
+
+---
+
+## Rate limits
+
+### claudeAiLimits.ts
+
+Fetches and caches the current user's rate limit state from the Claude.ai API. Used to show usage warnings and throttle requests.
+
+### policyLimits/
+
+Enforces organization-level policy limits configured in the Anthropic Console. Limits are loaded asynchronously at startup via `initializePolicyLimitsLoadingPromise()`. Policy keys include:
+
+- `allow_remote_control` — whether Remote Control (bridge mode) is permitted
+- `allow_background_tasks` — whether background agent tasks are permitted
+
+### rateLimitMessages.ts
+
+Maps rate limit error codes to user-facing messages. Displayed in the `TokenWarning` component and the rate limit dialog.
+
+---
+
+## Plugins
+
+`src/services/plugins/` handles plugin loading and management.
+
+Plugins extend Claude Code with custom tools, commands, and context. They are loaded from:
+1. `~/.claude/plugins/` (global)
+2. `.claude/plugins/` (project-scoped)
+
+The plugin loader validates plugin manifests, resolves tool schemas, and registers custom tools into the active tool pool.
+
+---
+
+## Sync
+
+### settingsSync/
+
+Syncs `settings.json` to/from the Anthropic Console for users who want consistent settings across machines. Runs in the background after login.
+
+### teamMemorySync/
+
+Syncs team-scoped memory entries across team members. Used in multi-agent team sessions to share context.
+
+---
+
+## Prompt suggestions
+
+### PromptSuggestion/
+
+Generates context-aware prompt suggestions based on the current working directory, recent git activity, and conversation history. Suggestions appear in the prompt input when the user presses `Tab` on an empty prompt.
+
+---
+
+## Additional services
+
+<AccordionGroup>
+  <Accordion title="AgentSummary/">
+    Generates compact summaries of completed agent runs. Summaries are injected back into the parent agent's context when a sub-agent finishes, replacing the full transcript to save tokens.
+  </Accordion>
+
+  <Accordion title="api/">
+    Wraps the Anthropic Messages API with retry logic, streaming support, and prompt caching. Also contains `dumpPrompts.ts` for the `--dump-system-prompt` fast path.
+  </Accordion>
+
+  <Accordion title="remoteManagedSettings/">
+    Fetches organization-managed settings from the Anthropic Console. Managed settings override local `settings.json` values. Loaded asynchronously at startup.
+  </Accordion>
+
+  <Accordion title="diagnosticTracking.ts">
+    Collects diagnostic information (CPU, memory, Bun version, OS) for bug reports. Data is only included when the user explicitly runs `/diagnose`.
+  </Accordion>
+
+  <Accordion title="internalLogging.ts">
+    Internal structured log sink. Separate from user-visible output — writes to `~/.claude/logs/` for debugging.
+  </Accordion>
+
+  <Accordion title="notifier.ts">
+    System notification integration. Sends desktop notifications when background agent tasks complete (macOS `osascript`, Linux `notify-send`).
+  </Accordion>
+
+  <Accordion title="tips/">
+    Manages the rotating tips shown at session start. Tips are loaded from a bundled JSON file and filtered by feature flags.
+  </Accordion>
+
+  <Accordion title="toolUseSummary/">
+    Generates human-readable summaries of tool use sequences. Used in the `CompactSummary` component and in agent handoff messages.
+  </Accordion>
+
+  <Accordion title="voice.ts and voiceStreamSTT.ts">
+    Voice input integration. Streams audio from the microphone to a speech-to-text API and injects the transcription as a user message.
+  </Accordion>
+
+  <Accordion title="tokenEstimation.ts">
+    Estimates token counts for messages without making an API call. Used to decide when to compact and to display the token usage indicator.
+  </Accordion>
+
+  <Accordion title="vcr.ts">
+    VCR-style HTTP request recording and playback. Used in integration tests to replay API responses deterministically.
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,118 @@
+---
+title: "Commands overview"
+description: "Complete reference for all slash commands available in the Claude Code REPL. Type / to open the command picker, or type a command directly."
+---
+
+Slash commands give you direct control over Claude Code without leaving the terminal. Type `/` in the REPL to open the interactive picker with fuzzy search, or type a command directly (e.g. `/compact`).
+
+<Note>
+Commands are loaded from four sources: built-in commands, installed plugins, skills directories (`.claude/skills/`), and MCP servers. The list you see may vary depending on which plugins and MCP servers you have enabled.
+</Note>
+
+## Session & navigation
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/clear` | Clear conversation history and free up context. Aliases: `reset`, `new` | `/clear` |
+| `/exit` | Exit the REPL. Alias: `quit` | `/exit` |
+| `/session` | Show remote session URL and QR code (requires `--remote` mode). Alias: `remote` | `/session` |
+| `/resume` | Resume a previous conversation by ID or search term. Alias: `continue` | `/resume` or `/resume my-feature-branch` |
+| `/rewind` | Restore code and/or conversation to a previous checkpoint. Alias: `checkpoint` | `/rewind` |
+| `/compact` | Summarize and compress conversation history to free up context window tokens | `/compact` or `/compact focus on the auth module` |
+| `/export` | Export the current conversation to a file or clipboard | `/export` or `/export session.md` |
+
+## AI & code quality
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/review` | AI code review of a pull request. Reads `gh pr diff` and analyzes changes | `/review` or `/review 42` |
+| `/security-review` | Security-focused code review of your current changes | `/security-review` |
+| `/plan` | Enable plan mode or view the current session plan. When enabled, Claude presents a step-by-step plan and waits for your approval before executing | `/plan` or `/plan open` |
+| `/ultrareview` | Deep bug-finding review that runs in the cloud (~10–20 min). Finds and verifies bugs in your branch | `/ultrareview` or `/ultrareview 42` |
+| `/diff` | View uncommitted changes and per-turn diffs | `/diff` |
+
+## File & context
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/files` | List all files currently in context | `/files` |
+| `/memory` | Open the memory file editor to manage CLAUDE.md memory files | `/memory` |
+| `/add-dir` | Add an additional working directory for Claude to access | `/add-dir ../shared-lib` |
+| `/context` | Visualize current context window usage as a colored grid | `/context` |
+
+## Configuration
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/config` | Open the configuration panel. Alias: `settings` | `/config` |
+| `/model` | Switch the active Claude model | `/model` or `/model claude-opus-4-5` |
+| `/theme` | Change the terminal color theme | `/theme` |
+| `/color` | Set the prompt bar color for this session | `/color blue` or `/color default` |
+| `/vim` | Toggle between Vim and Normal editing modes | `/vim` |
+| `/permissions` | Manage allow and deny tool permission rules. Alias: `allowed-tools` | `/permissions` |
+| `/privacy-settings` | View and update your privacy settings (claude.ai subscribers) | `/privacy-settings` |
+| `/hooks` | View and configure lifecycle hook configurations for tool events | `/hooks` |
+| `/keybindings` | Open or create your keybindings configuration file | `/keybindings` |
+
+## MCP & extensions
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/mcp` | Open MCP server management panel. Enable or disable servers | `/mcp` or `/mcp enable my-server` |
+| `/skills` | List available skills loaded from skill directories and plugins | `/skills` |
+| `/plugin` | Manage Claude Code plugins from the marketplace. Aliases: `plugins`, `marketplace` | `/plugin` |
+| `/reload-plugins` | Activate pending plugin changes in the current session | `/reload-plugins` |
+
+## Tasks & agents
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/tasks` | List and manage background tasks. Alias: `bashes` | `/tasks` |
+| `/agents` | Manage agent configurations | `/agents` |
+| `/branch` | Create a branch of the current conversation at this point | `/branch` or `/branch my-experiment` |
+| `/pr-comments` | Fetch and display comments from a GitHub pull request | `/pr-comments` or `/pr-comments 42` |
+
+## Utilities
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `/cost` | Show total cost and duration of the current session | `/cost` |
+| `/usage` | Show plan usage limits (claude.ai subscribers) | `/usage` |
+| `/stats` | Show your Claude Code usage statistics and activity | `/stats` |
+| `/doctor` | Diagnose and verify your Claude Code installation and settings | `/doctor` |
+| `/help` | Show help and available commands | `/help` |
+| `/feedback` | Submit feedback about Claude Code. Alias: `bug` | `/feedback` |
+| `/upgrade` | Upgrade to Max for higher rate limits and more Opus (claude.ai subscribers) | `/upgrade` |
+
+## Command types
+
+Commands fall into three implementation types that determine how they behave:
+
+<AccordionGroup>
+  <Accordion title="local">
+    Runs synchronously in the REPL process and returns text output. Examples: `/clear`, `/compact`, `/vim`. These are the lightest commands and often support non-interactive (SDK) mode.
+  </Accordion>
+  <Accordion title="local-jsx">
+    Renders a full React/Ink UI panel in the terminal. Examples: `/config`, `/mcp`, `/model`. These commands display interactive pickers, forms, and panels. They do not run in non-interactive mode.
+  </Accordion>
+  <Accordion title="prompt">
+    Expands to a prompt that is sent to the Claude model. Examples: `/review`, `/security-review`, `/pr-comments`. The model then executes the task using available tools. Skills loaded from `.claude/skills/` are also prompt-type commands.
+  </Accordion>
+</AccordionGroup>
+
+## Aliases
+
+Several commands accept shorter aliases:
+
+| Alias | Resolves to |
+|-------|------------|
+| `reset`, `new` | `/clear` |
+| `quit` | `/exit` |
+| `remote` | `/session` |
+| `continue` | `/resume` |
+| `checkpoint` | `/rewind` |
+| `settings` | `/config` |
+| `allowed-tools` | `/permissions` |
+| `plugins`, `marketplace` | `/plugin` |
+| `bashes` | `/tasks` |
+| `bug` | `/feedback` |

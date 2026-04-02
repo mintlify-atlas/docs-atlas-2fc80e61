@@ -1,80 +1,137 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Install Claude Code, authenticate, and run your first AI-assisted coding task in under five minutes."
 ---
 
-## Get started in three steps
+This guide walks you through installing Claude Code 2.1.88, setting up authentication, and using the interactive REPL to complete a real coding task.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+  Version 2.1.88 was pulled from the official npm registry. Install it from the Tencent mirror cache — see [Installation](/installation) for full details.
+</Note>
 
-### Step 1: Set up your local environment
+## Setup
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Install Claude Code">
+    Install the CLI globally using the Tencent mirror cache:
 
-### Step 2: Deploy your changes
+    ```bash
+    npm install -g https://mirrors.cloud.tencent.com/npm/@anthropic-ai/claude-code/-/claude-code-2.1.88.tgz
+    ```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    Verify the installation succeeded:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash
+    claude --version
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    You should see output like `2.1.88 (Claude Code)`.
+  </Step>
 
-### Step 3: Go live
+  <Step title="Set your API key">
+    Export your Anthropic API key as an environment variable. Add this to your shell profile (`.bashrc`, `.zshrc`, etc.) to persist it across sessions:
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```bash
+    export ANTHROPIC_API_KEY=sk-ant-api03-...
+    ```
+
+    If you prefer OAuth login through your `claude.ai` account instead, skip this step — you will be prompted to log in when you first run `claude`.
+  </Step>
+
+  <Step title="Open a project directory">
+    Navigate to the codebase you want to work on. Claude Code uses your current directory as the project root:
+
+    ```bash
+    cd ~/projects/my-app
+    ```
+  </Step>
+
+  <Step title="Start the REPL">
+    Launch Claude Code:
+
+    ```bash
+    claude
+    ```
+
+    If you did not set `ANTHROPIC_API_KEY`, Claude will prompt you to log in via OAuth. Follow the URL printed to the terminal to authenticate with your `claude.ai` account.
+
+    Once authenticated, you will see the interactive prompt ready to accept your first request.
+  </Step>
+
+  <Step title="Run your first task">
+    Type a natural-language request and press Enter:
+
+    ```
+    > Add error handling to my Express routes so unhandled errors return a JSON response with status 500
+    ```
+
+    Claude will read the relevant files, propose a plan, ask for your approval, apply the edits, and optionally run your test suite to verify nothing broke.
+  </Step>
+</Steps>
+
+## Example session
+
+Here is a realistic end-to-end session showing how Claude handles a multi-file refactor:
+
+```
+> Refactor the user authentication middleware in src/middleware/auth.ts to use
+  async/await instead of callbacks, and update the tests in tests/auth.test.ts
+
+● Reading src/middleware/auth.ts...
+● Reading tests/auth.test.ts...
+
+I'll refactor the auth middleware and update the tests. Here's my plan:
+
+1. Convert the callback-based verifyToken function to async/await
+2. Update the Express middleware wrapper to be an async function
+3. Update the two test cases that mock the callback interface
+
+May I proceed with these 3 file edits? [y/n] y
+
+● Editing src/middleware/auth.ts...  ✓
+● Editing tests/auth.test.ts...      ✓
+● Running: npm test                  ✓ 12 passed
+
+Done. The middleware and tests have been updated.
+```
+
+## Slash commands
+
+Inside the REPL, slash commands give you direct access to Claude Code's subsystems. Type `/` followed by the command name:
+
+| Command | What it does |
+|---|---|
+| `/help` | Show all available commands and keyboard shortcuts |
+| `/config` | View and edit configuration (model, permissions, memory settings) |
+| `/mcp` | Add, remove, enable, or disable MCP servers |
+| `/memory` | Open the project or user memory file — Claude reads these at session start |
+| `/permissions` | Review and modify tool permission rules |
+| `/review` | Start a structured code review of staged changes or a file range |
+| `/session` | List, resume, or export previous conversations |
+| `/tasks` | View and manage the active task graph for multi-step work |
+| `/plan` | Enter planning mode — Claude outlines a full plan before taking action |
+| `/compact` | Summarize the conversation to free up context window space |
+| `/model` | Switch the active model mid-session |
+| `/cost` | Show token usage and estimated cost of the current session |
+| `/exit` | Exit the REPL |
+
+<Tip>
+  Press `Ctrl+C` once to cancel an in-progress response. Press `Ctrl+C` twice (or type `/exit`) to quit the REPL.
+</Tip>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation details" icon="download" href="/installation">
+    Mirror options, environment variables, system requirements, and Node.js notes
+  </Card>
+  <Card title="Command reference" icon="terminal" href="/commands/overview">
+    Full list of slash commands with detailed descriptions
+  </Card>
+  <Card title="Tool permissions" icon="shield" href="/concepts/permissions">
+    Understand how Claude asks for and remembers tool permissions
+  </Card>
+  <Card title="MCP integration" icon="plug" href="/extensibility/mcp-integration">
+    Connect external tools and data sources via MCP servers
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

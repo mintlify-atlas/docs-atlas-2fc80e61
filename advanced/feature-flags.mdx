@@ -1,0 +1,202 @@
+---
+title: "Feature Flags"
+description: "How Claude Code uses build-time feature flags to gate experimental features and perform dead code elimination."
+---
+
+Claude Code uses a `feature()` function from `bun:bundle` to gate blocks of code at build time. This enables dead code elimination: any code wrapped in a `feature('FLAG_NAME')` call that evaluates to `false` is stripped entirely from the compiled output.
+
+## How feature() Works
+
+```typescript
+import { feature } from 'bun:bundle'
+
+// Build-time dead code elimination:
+if (feature('BRIDGE_MODE')) {
+  // This entire block is removed from external builds
+  const { bridgeMain } = await import('../bridge/bridgeMain.js')
+  await bridgeMain(args)
+}
+```
+
+The `feature()` function is evaluated at **bundle time**, not at runtime. This means:
+
+- Code inside a `false` feature block is never included in the binary
+- String literals inside gated blocks (like GrowthBook flag names) don't appear in external builds
+- Conditional imports only load the module when the flag is on
+
+Feature flags work alongside runtime GrowthBook gates. A feature flag enables the code path; a GrowthBook gate may further restrict it to specific users or organizations at runtime.
+
+## Flag Reference
+
+### Core Features
+
+<Tabs>
+  <Tab title="Agent & Coordination">
+    | Flag | Description |
+    |---|---|
+    | `COORDINATOR_MODE` | Enables coordinator mode — restricts Claude to orchestration-only tools (`Agent`, `TaskStop`, `SendMessage`, `SyntheticOutput`) |
+    | `FORK_SUBAGENT` | Routes all `Agent` spawns through the fork path, forcing async execution for a unified `<task-notification>` interaction model |
+    | `AGENT_TRIGGERS` | Enables cron scheduling tools (`CronCreate`, `CronDelete`, `CronList`) for in-process teammates |
+    | `WORKFLOW_SCRIPTS` | Enables workflow automation via `WorkflowTool`; also blocks `WorkflowTool` inside sub-agents to prevent recursive execution |
+  </Tab>
+  <Tab title="Remote & Bridge">
+    | Flag | Description |
+    |---|---|
+    | `BRIDGE_MODE` | Enables Remote Control bridge — `claude remote-control` command and all bridge infrastructure |
+    | `CCR_AUTO_CONNECT` | Enables auto-connecting CCR sessions via the `tengu_cobalt_harbor` GrowthBook gate |
+    | `CCR_MIRROR` | Enables opt-in CCR mirror mode — every local session spawns an outbound-only remote session |
+    | `CCR_REMOTE_SETUP` | Adds the `remote-setup` (`web`) command for configuring remote environments |
+    | `BYOC_ENVIRONMENT_RUNNER` | Enables headless BYOC environment runner (`claude environment-runner`) |
+    | `SELF_HOSTED_RUNNER` | Enables headless self-hosted runner (`claude self-hosted-runner`) |
+  </Tab>
+  <Tab title="Assistant & UI">
+    | Flag | Description |
+    |---|---|
+    | `PROACTIVE` | Enables proactive assistant features |
+    | `KAIROS` | Full assistant mode — enables `cwd` in `Agent`, proactive features, and `assistantCommand` |
+    | `KAIROS_BRIEF` | Enables the `/brief` command |
+    | `KAIROS_GITHUB_WEBHOOKS` | Enables GitHub webhook subscription commands (`subscribe-pr`) |
+    | `ULTRAPLAN` | Enables ultra planning mode command |
+    | `VOICE_MODE` | Enables voice input support (`/voice` command) |
+    | `BUDDY` | Enables buddy mode |
+    | `TORCH` | Enables the `/torch` command |
+  </Tab>
+  <Tab title="Infrastructure">
+    | Flag | Description |
+    |---|---|
+    | `DAEMON` | Enables daemon mode — long-running supervisor process (`claude daemon`) and daemon workers (`--daemon-worker`) |
+    | `BG_SESSIONS` | Enables background session management (`claude ps`, `logs`, `attach`, `kill`, `--bg`) |
+    | `HISTORY_SNIP` | Enables history snipping for long conversations |
+    | `UDS_INBOX` | Enables Unix domain socket inbox for cross-session messaging via `SendMessage` |
+    | `MCP_SKILLS` | Enables MCP prompt-based skills |
+    | `EXPERIMENTAL_SKILL_SEARCH` | Enables experimental local skill search index |
+    | `CHICAGO_MCP` | Enables the computer use MCP server (`--computer-use-mcp`) |
+  </Tab>
+  <Tab title="Diagnostics">
+    | Flag | Description |
+    |---|---|
+    | `ABLATION_BASELINE` | Enables baseline ablation study mode (ant-only) |
+    | `DUMP_SYSTEM_PROMPT` | Adds `--dump-system-prompt` CLI flag that outputs the rendered system prompt and exits (ant-only) |
+    | `TEMPLATES` | Enables template job commands (`claude new`, `list`, `reply`) |
+  </Tab>
+</Tabs>
+
+## Ant-Only vs External Builds
+
+Some flags and code paths are restricted to Anthropic-internal builds. These are gated by checking `process.env.USER_TYPE === 'ant'` or by using feature flags that are only `true` in internal builds.
+
+### USER_TYPE checks
+
+```typescript
+// src/constants/tools.ts — nested agents only for ant builds
+export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
+  TASK_OUTPUT_TOOL_NAME,
+  EXIT_PLAN_MODE_V2_TOOL_NAME,
+  ENTER_PLAN_MODE_TOOL_NAME,
+  // Allow Agent tool for agents when user is ant (enables nested agents)
+  ...(process.env.USER_TYPE === 'ant' ? [] : [AGENT_TOOL_NAME]),
+  ASK_USER_QUESTION_TOOL_NAME,
+  TASK_STOP_TOOL_NAME,
+])
+```
+
+```typescript
+// src/commands.ts — agents-platform command is ant-only
+const agentsPlatform =
+  process.env.USER_TYPE === 'ant'
+    ? require('./commands/agents-platform/index.js').default
+    : null
+```
+
+### DUMP_SYSTEM_PROMPT (ant-only)
+
+```typescript
+// src/entrypoints/cli.tsx
+if (feature('DUMP_SYSTEM_PROMPT') && args[0] === '--dump-system-prompt') {
+  // Outputs the rendered system prompt for use in prompt sensitivity evals.
+  // Eliminated from external builds via feature flag.
+  const prompt = await getSystemPrompt([], model)
+  console.log(prompt.join('\n'))
+  return
+}
+```
+
+## ABLATION_BASELINE
+
+The `ABLATION_BASELINE` flag enables a harness-science ablation study mode. When both `feature('ABLATION_BASELINE')` is true **and** the `CLAUDE_CODE_ABLATION_BASELINE` environment variable is set, a set of capability-disabling env vars are automatically applied at startup:
+
+```typescript
+// src/entrypoints/cli.tsx
+if (feature('ABLATION_BASELINE') && process.env.CLAUDE_CODE_ABLATION_BASELINE) {
+  for (const k of [
+    'CLAUDE_CODE_SIMPLE',
+    'CLAUDE_CODE_DISABLE_THINKING',
+    'DISABLE_INTERLEAVED_THINKING',
+    'DISABLE_COMPACT',
+    'DISABLE_AUTO_COMPACT',
+    'CLAUDE_CODE_DISABLE_AUTO_MEMORY',
+    'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS',
+  ]) {
+    process.env[k] ??= '1'  // only sets if not already set
+  }
+}
+```
+
+This lets researchers establish a capability baseline by disabling extended thinking, auto-compaction, memory, and background tasks in a single env var.
+
+| Env var | Effect |
+|---|---|
+| `CLAUDE_CODE_SIMPLE` | Enables simple/bare mode (fewer UI elements) |
+| `CLAUDE_CODE_DISABLE_THINKING` | Disables extended thinking |
+| `DISABLE_INTERLEAVED_THINKING` | Disables interleaved thinking tokens |
+| `DISABLE_COMPACT` | Disables manual `/compact` |
+| `DISABLE_AUTO_COMPACT` | Disables automatic context compaction |
+| `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | Disables automatic memory writes |
+| `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` | Disables background agent tasks |
+
+## WORKFLOW_SCRIPTS and WorkflowTool
+
+When the `WORKFLOW_SCRIPTS` flag is on, the `WorkflowTool` is available in the main session. To prevent recursive workflow execution inside sub-agents, `WORKFLOW_TOOL_NAME` is automatically added to `ALL_AGENT_DISALLOWED_TOOLS`:
+
+```typescript
+// src/constants/tools.ts
+export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
+  // ...
+  ...(feature('WORKFLOW_SCRIPTS') ? [WORKFLOW_TOOL_NAME] : []),
+])
+```
+
+## Conditional Command Imports
+
+Commands gated behind feature flags use `require()` inside a ternary so the module is only loaded when the flag is on. This is the standard pattern throughout `src/commands.ts`:
+
+```typescript
+// src/commands.ts
+const bridge = feature('BRIDGE_MODE')
+  ? require('./commands/bridge/index.js').default
+  : null
+
+const voiceCommand = feature('VOICE_MODE')
+  ? require('./commands/voice/index.js').default
+  : null
+
+const workflowsCmd = feature('WORKFLOW_SCRIPTS')
+  ? require('./commands/workflows/index.js').default
+  : null
+
+const ultraplan = feature('ULTRAPLAN')
+  ? require('./commands/ultraplan.js').default
+  : null
+
+const buddy = feature('BUDDY')
+  ? require('./commands/buddy/index.js').default
+  : null
+
+const peersCmd = feature('UDS_INBOX')
+  ? require('./commands/peers/index.js').default
+  : null
+```
+
+<Note>
+The `feature()` call must stay inline (not assigned to an intermediate variable) for the Bun bundler to perform dead code elimination on the import string literals. Moving the call into a helper function breaks DCE.
+</Note>

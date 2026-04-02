@@ -1,0 +1,252 @@
+---
+title: "Permissions"
+description: "How Claude Code asks for permission before running tools, the permission rule system, bash security checks, and how to manage permissions with /permissions and sandbox mode."
+---
+
+Claude Code asks for permission before taking actions that could modify your system. The permission system is layered: high-level modes determine the default posture, explicit rules can allow or deny specific commands, and a set of security validators provide a safety net for bash commands.
+
+## Permission modes
+
+The permission mode controls Claude's default behavior when no explicit rule matches a tool call. Modes are defined in `src/types/permissions.ts`:
+
+```typescript
+export const EXTERNAL_PERMISSION_MODES = [
+  'acceptEdits',
+  'bypassPermissions',
+  'default',
+  'dontAsk',
+  'plan',
+] as const
+```
+
+| Mode | Behavior |
+|---|---|
+| `default` | Ask before any write or shell operation. The standard interactive mode. |
+| `acceptEdits` | Auto-approve file edits without prompting, but still ask for shell commands. |
+| `dontAsk` | Never prompt — auto-approve all operations. Use with caution. |
+| `bypassPermissions` | Bypasses all permission checks. Only available when explicitly enabled. |
+| `plan` | Read-only mode. Claude can analyze but not execute writes or shell commands. |
+
+There is also an internal `auto` mode (gated on the `TRANSCRIPT_CLASSIFIER` feature flag) that uses a classifier to evaluate commands and auto-approve low-risk ones without prompting.
+
+## Permission rules
+
+Rules allow you to persistently allow or deny specific operations. Each rule has a source, a behavior, and a value:
+
+```typescript
+export type PermissionRule = {
+  source: PermissionRuleSource   // where the rule came from
+  ruleBehavior: PermissionBehavior  // 'allow' | 'deny' | 'ask'
+  ruleValue: PermissionRuleValue    // { toolName, ruleContent? }
+}
+```
+
+### Rule sources
+
+Rules can originate from multiple places, and all active rules are evaluated together:
+
+| Source | Description |
+|---|---|
+| `userSettings` | `~/.claude/settings.json` — persists across all projects |
+| `projectSettings` | `.claude/settings.json` in the project root |
+| `localSettings` | `.claude/settings.local.json` — gitignored project settings |
+| `flagSettings` | Rules passed via CLI flags |
+| `policySettings` | Organization policy rules (enterprise deployments) |
+| `cliArg` | Rules passed as CLI arguments for the current session |
+| `command` | Rules added by slash commands during the session |
+| `session` | Rules approved interactively during the current session |
+
+### Rule behaviors
+
+When Claude asks for permission, you can respond with:
+
+- **Allow once** — approves the current call only; no rule is saved.
+- **Allow for session** — approves and saves a `session`-scoped rule.
+- **Always allow** — approves and saves a rule to `projectSettings` or `userSettings`.
+- **Deny** — blocks the call and saves a deny rule.
+
+### Permission rule values
+
+For `BashTool`, rules use a pattern syntax:
+
+- `Bash(git commit)` — exact match: only allows `git commit` with no arguments.
+- `Bash(git commit:*)` — prefix match: allows `git commit` with any arguments.
+- `Bash(git *)` — wildcard match: allows any `git` subcommand.
+
+## Bash permission checking
+
+`src/tools/BashTool/bashPermissions.ts` implements the permission check for bash commands. The check runs in order:
+
+<Steps>
+  <Step title="Exact match check">
+    Tests the raw command against deny, ask, and allow rules using exact matching. A deny rule returns immediately; an allow rule short-circuits the remaining checks.
+  </Step>
+  <Step title="Prefix/wildcard check">
+    Strips safe wrappers (`timeout`, `time`, `nice`, `nohup`) and safe environment variable prefixes, then tests against prefix and wildcard rules. Deny rules take priority over ask rules; ask rules take priority over allow rules.
+  </Step>
+  <Step title="Path constraints">
+    `checkPathConstraints()` validates that the paths referenced in the command fall within the working directory. Attempts to access paths outside the project directory trigger an `ask` result.
+  </Step>
+  <Step title="Security check">
+    `bashCommandIsSafeAsync()` runs the security validators defined in `bashSecurity.ts`. If any validator returns `ask`, the permission prompt is shown.
+  </Step>
+  <Step title="Mode check">
+    `checkPermissionMode()` applies the current permission mode. In `acceptEdits` mode, file-only commands are auto-allowed; in `dontAsk` mode, the command is allowed unconditionally.
+  </Step>
+  <Step title="Read-only check">
+    `BashTool.isReadOnly(input)` tests whether the command is a read-only operation (e.g., `git log`, `cat`, `ls`). Read-only commands are allowed without prompting.
+  </Step>
+</Steps>
+
+## Bash security validators
+
+`src/tools/BashTool/bashSecurity.ts` contains a pipeline of validators that detect patterns that could bypass the permission system. Each validator returns a `PermissionResult` with behavior `passthrough`, `allow`, or `ask`.
+
+<AccordionGroup>
+  <Accordion title="Command substitution ($(), backticks)">
+    Detects `$()`, `` ` ``, `${}`, `<()`, `>()`, and Zsh process substitutions. These can execute arbitrary commands hidden inside quoted strings.
+
+    Exception: `$(cat <<'DELIM'...DELIM)` with a quoted or escaped heredoc delimiter is considered safe and is allowed through `isSafeHeredoc()`.
+  </Accordion>
+  <Accordion title="Dangerous variables">
+    Blocks commands where variables appear directly in redirect or pipe positions: `< $VAR`, `$VAR | ...`. Variable expansion in these positions can hide the actual target from static analysis.
+  </Accordion>
+  <Accordion title="IFS injection">
+    Blocks commands that reference `$IFS` or `${...IFS...}`. Changing the Internal Field Separator can defeat token splitting logic.
+  </Accordion>
+  <Accordion title="Obfuscated flags">
+    Detects ANSI-C quoting (`$'...'`), locale quoting (`$"..."`), and empty quote pairs adjacent to flags (`''-exec`, `"""-f"`). These can hide dangerous flag characters from pattern matchers.
+
+    ```typescript
+    // ANSI-C quoting can encode any character
+    if (/\$'[^']*'/.test(originalCommand)) {
+      return { behavior: 'ask', message: 'Command contains ANSI-C quoting which can hide characters' }
+    }
+    ```
+  </Accordion>
+  <Accordion title="Newlines and carriage returns">
+    Newlines outside quotes can introduce a second command on a new line. Carriage returns (`\r`) cause a tokenization difference between the shell-quote parser (treats `\r` as whitespace) and bash (treats it as a literal character), which can hide commands.
+  </Accordion>
+  <Accordion title="Malformed token injection">
+    Detects commands where shell-quote parsing produces unbalanced delimiters combined with command separators. This can allow JSON-like content (`{"hi":"hi;evil"}`) to be misinterpreted.
+  </Accordion>
+  <Accordion title="/proc/environ access">
+    Blocks commands accessing `/proc/*/environ`, which can expose environment variables including API keys.
+
+    ```typescript
+    if (/\/proc\/.*\/environ/.test(originalCommand)) {
+      return { behavior: 'ask', message: 'Command accesses /proc/*/environ...' }
+    }
+    ```
+  </Accordion>
+  <Accordion title="Zsh dangerous commands">
+    Blocks `zmodload`, `emulate`, and Zsh module builtins (`zpty`, `ztcp`, `zsocket`, `sysopen`, etc.) that can bypass normal file and network restrictions.
+  </Accordion>
+  <Accordion title="Brace expansion">
+    Detects brace expansion patterns that could generate unexpected command sequences.
+  </Accordion>
+</AccordionGroup>
+
+### Safe wrapper stripping
+
+Before permission rule matching, `stripSafeWrappers()` removes safe command wrappers from the command string so that rules like `Bash(npm install:*)` correctly match `timeout 30 npm install foo`:
+
+```typescript
+// Wrappers that are stripped before matching:
+// timeout <duration> <cmd>
+// time <cmd>
+// nice [-n N] <cmd>
+// nohup <cmd>
+
+// Safe environment variable prefixes are also stripped:
+// NODE_ENV=production npm run build  →  npm run build
+// RUST_LOG=debug cargo test          →  cargo test
+```
+
+<Note>
+Only environment variables on an explicit allowlist are stripped for **allow** rule matching. For **deny** and **ask** rules, `stripAllLeadingEnvVars()` strips all leading env vars to prevent bypasses like `FOO=bar denied_command`.
+</Note>
+
+## Destructive command warnings
+
+`src/tools/BashTool/destructiveCommandWarning.ts` detects commands that are technically permitted but have the potential to cause data loss. These produce a visible warning in the permission dialog without blocking execution:
+
+```typescript
+const DESTRUCTIVE_PATTERNS: DestructivePattern[] = [
+  { pattern: /\bgit\s+reset\s+--hard\b/,          warning: 'Note: may discard uncommitted changes' },
+  { pattern: /\bgit\s+push\b[^;&|\n]*--force\b/,  warning: 'Note: may overwrite remote history' },
+  { pattern: /\bgit\s+clean\b.+-[a-zA-Z]*f/,      warning: 'Note: may permanently delete untracked files' },
+  { pattern: /(^|[;&|\n]\s*)rm\s+-[a-zA-Z]*[rR]/,  warning: 'Note: may recursively remove files' },
+  { pattern: /\b(DROP|TRUNCATE)\s+(TABLE|DATABASE)\b/i, warning: 'Note: may drop or truncate database objects' },
+  { pattern: /\bkubectl\s+delete\b/,               warning: 'Note: may delete Kubernetes resources' },
+  { pattern: /\bterraform\s+destroy\b/,            warning: 'Note: may destroy Terraform infrastructure' },
+  // ... and more
+]
+```
+
+## Path validation
+
+`src/tools/BashTool/pathValidation.ts` validates that the file paths referenced in a command fall within the permitted working directories. It:
+
+1. Extracts path arguments from commands using command-specific extractors (`PATH_EXTRACTORS` for `cd`, `ls`, `rm`, `git`, etc.).
+2. Resolves each path relative to the current working directory.
+3. Tests each resolved path against `allWorkingDirectories()` — the set of directories Claude is allowed to access.
+4. Returns an `ask` result with the blocked path and a suggested rule if any path falls outside the permitted set.
+
+Paths involving `~` are expanded before validation. The validator also recognizes and blocks patterns like `../../../etc/passwd` that attempt to escape the working directory.
+
+## Read-only validation
+
+`src/tools/BashTool/readOnlyValidation.ts` determines whether a bash command is read-only. If it is, the command is auto-allowed regardless of permission mode. Read-only detection uses:
+
+- **Command allowlists** — `GIT_READ_ONLY_COMMANDS`, `GH_READ_ONLY_COMMANDS`, `EXTERNAL_READONLY_COMMANDS`, `DOCKER_READ_ONLY_COMMANDS`, `RIPGREP_READ_ONLY_COMMANDS`, `PYRIGHT_READ_ONLY_COMMANDS`.
+- **Flag validation** — `validateFlags()` checks that no write-mode flags are present for commands on the allowlist.
+- **Sed parsing** — `sedCommandIsAllowedByAllowlist()` checks that `sed` commands are read-only (no `-i` flag).
+
+## Managing permissions
+
+### /permissions command
+
+The `/permissions` slash command opens an interactive UI for viewing and editing the current permission rules. You can:
+
+- View rules by source (user, project, session).
+- Remove existing allow or deny rules.
+- See which rules are currently active.
+
+### /sandbox-toggle
+
+The `/sandbox-toggle` command enables or disables sandbox mode. When sandbox mode is active, bash commands run inside an OS-level sandbox (macOS `sandbox-exec` or Linux seccomp/namespaces) that restricts filesystem writes and network access to the working directory.
+
+`src/tools/BashTool/shouldUseSandbox.ts` contains the logic that decides whether to use the sandbox for a given command, including an `excludedCommands` list for commands that are known to be incompatible with sandboxing.
+
+### Permission update operations
+
+Permissions can be modified programmatically via `PermissionUpdate` operations:
+
+```typescript
+export type PermissionUpdate =
+  | { type: 'addRules';       destination: PermissionUpdateDestination; rules: PermissionRuleValue[]; behavior: PermissionBehavior }
+  | { type: 'replaceRules';   destination: PermissionUpdateDestination; rules: PermissionRuleValue[]; behavior: PermissionBehavior }
+  | { type: 'removeRules';    destination: PermissionUpdateDestination; rules: PermissionRuleValue[]; behavior: PermissionBehavior }
+  | { type: 'setMode';        destination: PermissionUpdateDestination; mode: ExternalPermissionMode }
+  | { type: 'addDirectories'; destination: PermissionUpdateDestination; directories: string[] }
+  | { type: 'removeDirectories'; destination: PermissionUpdateDestination; directories: string[] }
+```
+
+Destination can be `userSettings`, `projectSettings`, `localSettings`, `session`, or `cliArg`.
+
+## Permission decision flow
+
+The complete decision type hierarchy returned by `bashToolHasPermission` and other `*HasPermission` functions:
+
+```typescript
+export type PermissionDecision =
+  | PermissionAllowDecision   // behavior: 'allow' — proceed without prompting
+  | PermissionAskDecision     // behavior: 'ask'   — show permission dialog
+  | PermissionDenyDecision    // behavior: 'deny'  — block and report to model
+
+// PermissionResult also includes:
+| { behavior: 'passthrough' } // Continue to next check in the pipeline
+```
+
+Each decision carries a `decisionReason` that explains why the decision was made — rule match, mode setting, safety check, etc. This reason is used for logging and for displaying informative messages in the UI.

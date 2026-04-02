@@ -1,0 +1,250 @@
+---
+title: "Shell Tools"
+description: "Source reference for shell execution tools: BashTool and PowerShellTool."
+---
+
+Shell tools execute commands in a subprocess and return the combined stdout/stderr. They are the most powerful tools available — and the most heavily guarded by security checks, permission rules, and read-only mode enforcement.
+
+---
+
+## Bash (`BashTool`)
+
+**Source**: `src/tools/BashTool/`
+
+Executes shell commands. Every invocation passes through a multi-layer security pipeline before the command reaches a subprocess.
+
+### Tool name
+
+```typescript
+export const BASH_TOOL_NAME = 'Bash'  // src/tools/BashTool/toolName.ts
+```
+
+### Command classification
+
+`BashTool.tsx` classifies every command for UI grouping purposes:
+
+```typescript
+// Search commands — collapsed as "searched N files"
+const BASH_SEARCH_COMMANDS = new Set([
+  'find', 'grep', 'rg', 'ag', 'ack', 'locate', 'which', 'whereis',
+])
+
+// Read commands — collapsed as "read N files"
+const BASH_READ_COMMANDS = new Set([
+  'cat', 'head', 'tail', 'less', 'more',
+  'wc', 'stat', 'file', 'strings',
+  'jq', 'awk', 'cut', 'sort', 'uniq', 'tr',
+])
+
+// Directory listing — collapsed as "listed N directories"
+const BASH_LIST_COMMANDS = new Set(['ls', 'tree', 'du'])
+
+// Semantic-neutral — don't affect the read/search classification of a pipeline
+const BASH_SEMANTIC_NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false', ':'])
+
+// Commands that produce no stdout on success
+const BASH_SILENT_COMMANDS = new Set([
+  'mv', 'cp', 'rm', 'mkdir', 'rmdir', 'chmod', 'chown',
+  'chgrp', 'touch', 'ln', 'cd', 'export', 'unset', 'wait',
+])
+```
+
+For pipelines, **all** segments must be search/read commands for the whole command to be collapsible. Semantic-neutral commands are skipped in any position.
+
+### Progress display
+
+```typescript
+const PROGRESS_THRESHOLD_MS = 2000       // Show spinner after 2 seconds
+const ASSISTANT_BLOCKING_BUDGET_MS = 15_000  // Auto-background blocking bash after 15 seconds in assistant mode
+```
+
+---
+
+### bashSecurity.ts — Security layer
+
+`bashSecurity.ts` is a 2,500+ line security module that runs before every bash execution. It rejects commands matching dangerous patterns.
+
+#### Blocked command substitution patterns
+
+```typescript
+const COMMAND_SUBSTITUTION_PATTERNS = [
+  { pattern: /<\(/, message: 'process substitution <()' },
+  { pattern: />\(/, message: 'process substitution >()' },
+  { pattern: /=\(/, message: 'Zsh process substitution =()' },
+  { pattern: /(?:^|[\s;&|])=[a-zA-Z_]/, message: 'Zsh equals expansion (=cmd)' },
+  { pattern: /\$\(/, message: '$() command substitution' },
+  { pattern: /\$\{/, message: '${} parameter substitution' },
+  { pattern: /\$\[/, message: '$[] legacy arithmetic expansion' },
+  { pattern: /~\[/, message: 'Zsh-style parameter expansion' },
+  { pattern: /<#/, message: 'PowerShell comment syntax' },
+]
+```
+
+#### Blocked Zsh-specific commands
+
+```typescript
+const ZSH_DANGEROUS_COMMANDS = new Set([
+  'zmodload',  // Gateway to module-based attacks (zsh/mapfile, zsh/system, etc.)
+  'emulate',   // eval-equivalent with -c flag
+  'sysopen', 'sysread', 'syswrite', 'sysseek',  // File descriptor ops (zsh/system)
+  'zpty',      // Pseudo-terminal command execution (zsh/zpty)
+  'ztcp',      // TCP connections for exfiltration (zsh/net/tcp)
+  'zsocket',   // Unix/TCP sockets (zsh/net/socket)
+  'mapfile',   // Array-based file I/O (zsh/mapfile)
+  'zf_rm', 'zf_mv', 'zf_ln', 'zf_chmod',  // Builtin file ops (zsh/files)
+  'zf_chown', 'zf_mkdir', 'zf_rmdir', 'zf_chgrp',
+])
+```
+
+Security check IDs (logged as numbers to avoid leaking strings in telemetry):
+
+| ID | Check |
+|---|---|
+| 1 | Incomplete / truncated commands |
+| 2 | `jq` `@sh` / `env` system function |
+| 3 | `jq` file arguments |
+
+<Warning>
+The security layer runs on every bash invocation regardless of permission mode. Blocked patterns raise a `PermissionDenied` error before the command reaches a subprocess.
+</Warning>
+
+---
+
+### commandSemantics.ts — Exit code interpretation
+
+Many commands use non-zero exit codes to convey information rather than failure. `commandSemantics.ts` maps commands to custom exit code semantics:
+
+```typescript
+const COMMAND_SEMANTICS: Map<string, CommandSemantic> = new Map([
+  // grep: 0=matches found, 1=no matches, 2+=error
+  ['grep', (exitCode) => ({ isError: exitCode >= 2,
+    message: exitCode === 1 ? 'No matches found' : undefined })],
+
+  // ripgrep: same as grep
+  ['rg', (exitCode) => ({ isError: exitCode >= 2,
+    message: exitCode === 1 ? 'No matches found' : undefined })],
+
+  // find: 0=success, 1=some dirs inaccessible, 2+=error
+  ['find', (exitCode) => ({ isError: exitCode >= 2,
+    message: exitCode === 1 ? 'Some directories were inaccessible' : undefined })],
+
+  // diff: 0=no differences, 1=differences found, 2+=error
+  ['diff', (exitCode) => ({ isError: exitCode >= 2,
+    message: exitCode === 1 ? 'Files differ' : undefined })],
+
+  // test/[: 0=true, 1=false, 2+=error
+  ['test', (exitCode) => ({ isError: exitCode >= 2,
+    message: exitCode === 1 ? 'Condition is false' : undefined })],
+])
+```
+
+The default semantic treats only exit code `0` as success.
+
+---
+
+### pathValidation.ts — Directory traversal prevention
+
+Validates that commands don't access paths outside the allowed working directory. Blocks `../../` traversal patterns and absolute paths outside the project root.
+
+---
+
+### readOnlyValidation.ts — Write prevention
+
+In read-only mode (`CLAUDE_CODE_BASH_READONLY=1` or permission mode `readonly`), this module inspects the parsed AST of every command and rejects any that would write to the filesystem, modify environment variables, or execute privileged operations.
+
+---
+
+### sedEditParser.ts — sed edit command handling
+
+When Claude Code detects a `sed -i` (in-place edit) command, `sedEditParser.ts` extracts the sed substitution expression and re-routes it through the `FileEditTool` path. This gives the same diff display and undo semantics as a native `Edit` tool call.
+
+---
+
+### destructiveCommandWarning.ts
+
+Inspects commands for irreversible operations (`rm -rf`, `git push --force`, `DROP TABLE`, etc.) and injects a confirmation prompt before the command runs in interactive sessions.
+
+---
+
+### modeValidation.ts
+
+Validates the `timeout` and `background` parameters against the active permission mode. For example, background tasks are blocked when `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` is set.
+
+---
+
+### shouldUseSandbox.ts
+
+Determines whether a given command should run inside the sandbox. Returns `true` when:
+- The global sandbox is enabled (`CLAUDE_CODE_USE_SANDBOX=1`)
+- The command matches a pattern that requires sandboxing (e.g., network-accessing commands when network is restricted)
+
+---
+
+### bashPermissions.ts
+
+Implements the per-command permission rule system. Permission rules use glob-style patterns:
+
+```typescript
+// Example permission rules
+"Bash(git log:*)"   // Allow all git log commands
+"Bash(npm run:*)"   // Allow all npm run commands
+"Bash(rm:-rf /)"    // Deny recursive delete of root (blocked by security layer anyway)
+```
+
+Key exports:
+- `bashToolHasPermission()` — checks a command against the active permission rules
+- `matchWildcardPattern()` — glob pattern matcher for permission rules
+- `permissionRuleExtractPrefix()` — extracts the command prefix from a rule string
+- `commandHasAnyCd()` — detects `cd` usage (relevant for path validation)
+
+---
+
+### Additional BashTool files
+
+| File | Purpose |
+|---|---|
+| `bashCommandHelpers.ts` | Command string manipulation helpers |
+| `commentLabel.ts` | Extracts `# label` comments for UI display |
+| `sedValidation.ts` | Validates sed expressions before execution |
+| `utils.ts` | Output processing: image detection, line stripping, CWD reset |
+| `prompt.ts` | Tool description, timeout defaults |
+| `UI.tsx` | Output renderer, progress bar, background hint |
+| `BashToolResultMessage.tsx` | Message wrapper for bash tool results |
+
+---
+
+## PowerShell (`PowerShellTool`)
+
+**Source**: `src/tools/PowerShellTool/`
+
+Executes Windows PowerShell commands. Mirrors BashTool's architecture with Windows-specific adaptations.
+
+### Tool name
+
+```typescript
+export const POWERSHELL_TOOL_NAME = 'PowerShell'  // src/tools/PowerShellTool/toolName.ts
+```
+
+### Architecture
+
+PowerShellTool mirrors BashTool's module layout:
+
+| File | Purpose |
+|---|---|
+| `PowerShellTool.tsx` | Tool definition and execution |
+| `powershellSecurity.ts` | Blocked PowerShell patterns and cmdlets |
+| `powershellPermissions.ts` | Per-command permission rules |
+| `commandSemantics.ts` | Exit code semantics for PowerShell commands |
+| `pathValidation.ts` | Windows path traversal prevention |
+| `readOnlyValidation.ts` | Write prevention in read-only mode |
+| `destructiveCommandWarning.ts` | Warns before irreversible operations |
+| `modeValidation.ts` | Validates parameters against permission mode |
+| `gitSafety.ts` | Additional git safety checks for Windows |
+| `commonParameters.ts` | Shared parameter definitions (timeout, etc.) |
+| `clmTypes.ts` | CLM (Command Line Module) type definitions |
+| `prompt.ts` | Tool description and usage instructions |
+| `UI.tsx` | Ink render component |
+
+<Note>
+PowerShellTool is only available on Windows. On macOS and Linux, it is excluded from the active tool pool.
+</Note>
